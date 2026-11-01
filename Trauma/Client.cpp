@@ -29,6 +29,7 @@ namespace Trauma {
 		connectingTime = 0.0f;
 		helloCooldown = 0.0f;
 		pending.clear();
+		predictedBodies.clear();
 		players.clear();
 		nextInputSequence = 1;
 
@@ -45,6 +46,7 @@ namespace Trauma {
 		status = Status::Disconnected;
 		socket.Close();
 		pending.clear();
+		predictedBodies.clear();
 		players.clear();
 		playerId = 0;
 		snapshotTimer = 0.0f;
@@ -70,7 +72,9 @@ namespace Trauma {
 
 		SendPacket(packet);
 
-		StepPhysics(predicted, input, FixedDeltaTime);
+		for (PredictedBody& body : predictedBodies)
+			body.previousPosition = body.state.position;
+		StepPrediction(input);
 		predicted.lastInput = sent.sequence;
 
 		while (pending.size() > 240)
@@ -128,6 +132,16 @@ namespace Trauma {
 
 	const std::vector<Client::ObjectView>& Client::GetObjects() const {
 		return players;
+	}
+
+	bool Client::GetPredictedBodyPosition(uint8_t id, float alpha, olc::vf2d& position) const {
+		for (const PredictedBody& body : predictedBodies) {
+			if (body.id == id) {
+				position = body.previousPosition.lerp(body.state.position, std::clamp(alpha, 0.0f, 1.0f));
+				return true;
+			}
+		}
+		return false;
 	}
 
 	void Client::SendHello() {
@@ -191,6 +205,7 @@ namespace Trauma {
 		playerId = id;
 		predicted = welcome;
 		pending.clear();
+		predictedBodies.clear();
 		players.clear();
 		nextInputSequence = 1;
 		snapshotTimer = 0.0f;
@@ -203,15 +218,17 @@ namespace Trauma {
 	void Client::HandleSnapshot(Net::PacketReader& reader) {
 		uint32_t serverTick = 0;
 		uint8_t count = 0;
-		if (!reader.Read(serverTick) || !reader.Read(count) || count > MaxPlayers)
+		if (!reader.Read(serverTick) || !reader.Read(count) || count > MaxPlayers + TestBodyCount)
 			return;
 
 		if (serverTick <= latestServerTick)
 			return;
 
-		latestServerTick = serverTick;
 		bool sawLocalPlayer = false;
+		ObjectState authoritative;
+		std::vector<PredictedBody> receivedBodies;
 		std::vector<ObjectView> received;
+		receivedBodies.reserve(count);
 		received.reserve(count);
 
 		for (uint8_t index = 0; index < count; ++index) {
@@ -221,15 +238,24 @@ namespace Trauma {
 				return;
 
 			if (id == playerId) {
-				Reconcile(incoming, incoming.lastInput);
+				authoritative = incoming;
 				sawLocalPlayer = true;
 				continue;
 			}
 
+			PredictedBody body{id, incoming, incoming.position};
+			for (const PredictedBody& existing : predictedBodies) {
+				if (existing.id == id) {
+					body.previousPosition = existing.previousPosition;
+					break;
+				}
+			}
+			receivedBodies.push_back(body);
 			ObjectView view;
 			view.id = id;
 			view.position = incoming.position;
 			view.target = incoming.position;
+			view.radius = incoming.radius;
 
 			for (const ObjectView& existing : players) {
 				if (existing.id != id)
@@ -251,7 +277,10 @@ namespace Trauma {
 			return;
 		}
 
+		latestServerTick = serverTick;
+		predictedBodies = std::move(receivedBodies);
 		players = std::move(received);
+		Reconcile(authoritative, authoritative.lastInput);
 		snapshotTimer = 0.0f;
 	}
 
@@ -262,7 +291,26 @@ namespace Trauma {
 			pending.pop_front();
 
 		for (const SentInput& sent : pending)
-			StepPhysics(predicted, sent.input, FixedDeltaTime);
+			StepPrediction(sent.input);
+	}
+
+	void Client::StepPrediction(const InputState& input) {
+		ApplyPlayerInput(predicted, input);
+
+		std::vector<ObjectState*> bodies;
+		bodies.reserve(predictedBodies.size() + 1);
+		bool addedLocal = false;
+		for (PredictedBody& body : predictedBodies) {
+			if (!addedLocal && body.id > playerId) {
+				bodies.push_back(&predicted);
+				addedLocal = true;
+			}
+			bodies.push_back(&body.state);
+		}
+		if (!addedLocal)
+			bodies.push_back(&predicted);
+
+		StepPhysics(bodies, FixedDeltaTime);
 	}
 
 	void Client::SmoothRemoteObjects(float fElapsedTime) {

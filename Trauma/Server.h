@@ -39,6 +39,8 @@ namespace Trauma
 			uint8_t id = 0;
 			ObjectState player;
 			std::deque<QueuedInput> inputs;
+			float lastMoveX = 0.0f;
+			int missingInputTicks = 0;
 			uint32_t highestReceived = 0;
 			std::chrono::steady_clock::time_point lastSeen;
 		};
@@ -58,6 +60,7 @@ namespace Trauma
 	private:
 		Net::Socket socket;
 		std::array<ClientSlot, MaxPlayers> clients;
+		std::array<ObjectState, TestBodyCount> bodies;
 		std::thread worker;
 		std::atomic<bool> running = false;
 		uint32_t tick = 0;

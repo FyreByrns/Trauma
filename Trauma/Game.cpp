@@ -38,6 +38,7 @@ namespace Trauma {
 		if (keyboard.GetKey(olc::Key::ESCAPE).bPressed) {
 			client.Disconnect();
 			localRenderReady = false;
+			jumpQueued = false;
 			scene = Scene::Menu;
 			return true;
 		}
@@ -49,10 +50,12 @@ namespace Trauma {
 
 
 		if (client.GetStatus() == Client::Status::Connected) {
+			jumpQueued = jumpQueued || keyboard.GetKey(olc::Key::SPACE).bPressed;
 			fixedAccumulator += deltaTime;
 			int steps = 0;
 			while (fixedAccumulator >= FixedDeltaTime && steps < 5) {
-				const InputState input = SampleInput(false);
+				const InputState input = SampleInput(jumpQueued);
+				jumpQueued = false;
 
 				previousLocal = client.GetLocalState().position;
 				client.StepInput(input);
@@ -64,6 +67,7 @@ namespace Trauma {
 		}
 		else {
 			fixedAccumulator = 0.0f;
+			jumpQueued = false;
 		}
 
 		client.Poll(deltaTime);
@@ -144,7 +148,7 @@ namespace Trauma {
 		camera = olc::utils::Camera2D(ScreenSize(), { cameraZoom, cameraZoom });
 		camera.SetWorldBoundary(
 			{ -4000, -4000 },
-			{ 4000, 4000 });
+			{ 8000, 8000 });
 		camera.EnableWorldBoundary(true);
 		camera.SetLazyFollowRate(9.0f);
 		cameraTarget = { 0.0f, 0.0f };
@@ -163,7 +167,7 @@ namespace Trauma {
 		camera = olc::utils::Camera2D(ScreenSize(), { cameraZoom, cameraZoom });
 		camera.SetWorldBoundary(
 			{ -4000, -4000 },
-			{ 4000, 4000 });
+			{ 8000, 8000 });
 		camera.EnableWorldBoundary(true);
 		camera.SetLazyFollowRate(9.0f);
 		camera.SetTarget(cameraTarget);
@@ -173,21 +177,29 @@ namespace Trauma {
 	}
 
 	void Game::DrawScene() {
+		for (const Terrain& terrain : TestTerrain())
+			draw.FilledRect(terrain.pos, terrain.size, olc::Pixel(65, 80, 95));
 		DrawObjects();
 	}
 
 	void Game::DrawObjects() {
+		const float alpha = std::clamp(fixedAccumulator / FixedDeltaTime, 0.0f, 1.0f);
 		for (const Client::ObjectView& object : client.GetObjects()) {
-			DrawObject(object.position, olc::Colour::CYAN, false);
+			const bool isPlayer = object.id <= MaxPlayers;
+			const olc::Pixel colour = isPlayer ? olc::Colour::CYAN : olc::Pixel(235, 166, 75);
+			olc::vf2d position = object.position;
+			if (!isPlayer)
+				client.GetPredictedBodyPosition(object.id, alpha, position);
+			DrawObject(position, object.radius, colour);
 		}
 
 		if (client.GetStatus() != Client::Status::Connected)
 			return;
 
-		DrawObject(renderedLocal, olc::Colour::CYAN, true);
+		DrawObject(renderedLocal, client.GetLocalState().radius, olc::Colour::CYAN);
 	}
 
-	void Game::DrawObject(const olc::vf2d& position, olc::Pixel colour, bool bLocal) {
-		draw.FilledCircle(position, 10, colour);
+	void Game::DrawObject(const olc::vf2d& position, float radius, olc::Pixel colour) {
+		draw.FilledCircle(position, radius, colour);
 	}
 }

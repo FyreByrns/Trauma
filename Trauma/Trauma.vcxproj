@@ -127,7 +127,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="olcUTIL_Geometry2D.cpp" />
     <ClCompile Include="Trauma.cpp" />
     <ClCompile Include="Game.cpp" />
     <ClCompile Include="Server.cpp" />
@@ -147,6 +146,7 @@
     <ClInclude Include="IK.h" />
     <ClInclude Include="olcPixelGameEngine3.h" />
     <ClInclude Include="olcUTIL3_Camera2D.h" />
+    <ClInclude Include="olcUTIL3_Geometry2D.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

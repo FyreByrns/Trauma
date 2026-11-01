@@ -46,6 +46,7 @@ namespace Trauma {
 
 		for (ClientSlot& client : clients)
 			client = ClientSlot{};
+		bodies = CreateTestBodies();
 
 		tick = 0;
 		std::cout << "[server] listening on port " << socket.GetPort() << std::endl;
@@ -104,18 +105,31 @@ namespace Trauma {
 	}
 
 	void Server::StepSimulation() {
+		std::vector<ObjectState*> activeBodies;
+		activeBodies.reserve(MaxPlayers + TestBodyCount);
 		for (ClientSlot& client : clients) {
 			if (!client.bActive)
 				continue;
 
-			while (!client.inputs.empty()) {
+			InputState input;
+			if (!client.inputs.empty()) {
 				const QueuedInput queued = client.inputs.front();
 				client.inputs.pop_front();
 				client.player.lastInput = queued.sequence;
-				StepPhysics(client.player, queued.input, FixedDeltaTime);
+				input = queued.input;
+				client.lastMoveX = input.moveX;
+				client.missingInputTicks = 0;
 			}
+			else if (client.missingInputTicks++ < Net::InputRedundancy) {
+				input.moveX = client.lastMoveX;
+			}
+			ApplyPlayerInput(client.player, input);
+			activeBodies.push_back(&client.player);
 		}
+		for (ObjectState& body : bodies)
+			activeBodies.push_back(&body);
 
+		StepPhysics(activeBodies, FixedDeltaTime);
 		++tick;
 	}
 
@@ -123,7 +137,7 @@ namespace Trauma {
 		Net::PacketWriter packet(Net::MessageType::Snapshot);
 		packet.Write(tick);
 
-		uint8_t count = 0;
+		uint8_t count = static_cast<uint8_t>(bodies.size());
 		for (const ClientSlot& client : clients)
 			if (client.bActive)
 				++count;
@@ -133,6 +147,9 @@ namespace Trauma {
 			if (client.bActive)
 				Net::WriteObjectState(packet, client.id, client.player);
 		}
+
+		for (size_t index = 0; index < bodies.size(); ++index)
+			Net::WriteObjectState(packet, static_cast<uint8_t>(MaxPlayers + index + 1), bodies[index]);
 
 		for (const ClientSlot& client : clients) {
 			if (client.bActive)
@@ -172,8 +189,7 @@ namespace Trauma {
 			client.endpoint = endpoint;
 			client.id = static_cast<uint8_t>(index + 1);
 			client.lastSeen = std::chrono::steady_clock::now();
-			client.player.position = { 0, 0 };
-			client.player.grounded = true;
+			client.player.position = { -200.0f + static_cast<float>(index % 10) * 25.0f, -100.0f - static_cast<float>(index / 10) * 30.0f };
 
 			std::cout << "[server] player " << static_cast<int>(client.id)
 				<< " connected from " << endpoint.ToString() << std::endl;
@@ -213,7 +229,7 @@ namespace Trauma {
 		for (uint8_t index = 0; index < count; ++index) {
 			uint32_t sequence = 0;
 			InputState input;
-			if (!Net::ReadInputEntry(reader, sequence, input))
+			if (!Net::ReadInputEntry(reader, sequence, input) || !std::isfinite(input.moveX))
 				return;
 
 			entries[index] = { sequence, input };

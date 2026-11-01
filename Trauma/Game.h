@@ -30,7 +30,7 @@ namespace Trauma {
 		void SetCameraZoom(float zoom);
 		void DrawScene();
 		void DrawObjects();
-		void DrawObject(const olc::vf2d& position, olc::Pixel colour, bool bLocal);
+		void DrawObject(const olc::vf2d& position, float radius, olc::Pixel colour);
 
 	private:
 		std::string host;
@@ -40,6 +40,7 @@ namespace Trauma {
 
 		float fixedAccumulator = 0.0f;
 		bool localRenderReady = false;
+		bool jumpQueued = false;
 
 		olc::vf2d previousLocal;
 		olc::vf2d currentLocal;

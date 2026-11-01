@@ -20,6 +20,7 @@ namespace Trauma {
 			uint8_t id = 0;
 			olc::vf2d position;
 			olc::vf2d target;
+			float radius = PlayerRadius;
 			float facing = 1.0f;
 		};
 
@@ -37,11 +38,18 @@ namespace Trauma {
 		uint8_t GetPlayerId() const;
 		const ObjectState& GetLocalState() const;
 		const std::vector<ObjectView>& GetObjects() const;
+		bool GetPredictedBodyPosition(uint8_t id, float alpha, olc::vf2d& position) const;
 
 	private:
 		struct SentInput {
 			uint32_t sequence = 0;
 			InputState input;
+		};
+
+		struct PredictedBody {
+			uint8_t id = 0;
+			ObjectState state;
+			olc::vf2d previousPosition;
 		};
 
 		void SendHello();
@@ -51,6 +59,7 @@ namespace Trauma {
 		void HandleWelcome(Net::PacketReader& reader);
 		void HandleSnapshot(Net::PacketReader& reader);
 		void Reconcile(const ObjectState& authoritative, uint32_t lastInput);
+		void StepPrediction(const InputState& input);
 		void SmoothRemoteObjects(float fElapsedTime);
 
 	private:
@@ -59,6 +68,7 @@ namespace Trauma {
 		Status status = Status::Disconnected;
 		uint8_t playerId = 0;
 		ObjectState predicted;
+		std::vector<PredictedBody> predictedBodies;
 		std::vector<ObjectView> players;
 		std::deque<SentInput> pending;
 		uint32_t nextInputSequence = 1;

@@ -36,9 +36,6 @@
     <ClCompile Include="IK.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="olcUTIL_Geometry2D.cpp">
-      <Filter>Header Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Game.h">
@@ -69,6 +66,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="olcUTIL3_Camera2D.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="olcUTIL3_Geometry2D.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
