@@ -36,7 +36,9 @@ namespace Trauma {
 
 		Status GetStatus() const;
 		uint8_t GetPlayerId() const;
-		const ObjectState& GetLocalState() const;
+		const RagdollState& GetLocalRagdoll() const;
+		std::array<olc::vf2d, PartCount> GetLocalPose(float alpha) const;
+		bool GetRemotePose(uint8_t id, float alpha, std::array<olc::vf2d, PartCount>& pose, float& facing) const;
 		const std::vector<ObjectView>& GetObjects() const;
 		bool GetPredictedBodyPosition(uint8_t id, float alpha, olc::vf2d& position) const;
 
@@ -44,6 +46,19 @@ namespace Trauma {
 		struct SentInput {
 			uint32_t sequence = 0;
 			InputState input;
+		};
+
+		struct PredictedRagdoll {
+			uint8_t id = 0;
+			RagdollState state;
+			std::array<olc::vf2d, PartCount> previous{};
+		};
+
+		struct SnapshotChunk {
+			bool received = false;
+			uint8_t id = 0;
+			RagdollState ragdoll;
+			std::array<ObjectState, TestBodyCount> objects;
 		};
 
 		struct PredictedBody {
@@ -58,7 +73,7 @@ namespace Trauma {
 		void HandlePacket(Net::PacketReader& reader);
 		void HandleWelcome(Net::PacketReader& reader);
 		void HandleSnapshot(Net::PacketReader& reader);
-		void Reconcile(const ObjectState& authoritative, uint32_t lastInput);
+		void Reconcile(const RagdollState& authoritative, uint32_t lastInput);
 		void StepPrediction(const InputState& input);
 		void SmoothRemoteObjects(float fElapsedTime);
 
@@ -67,8 +82,13 @@ namespace Trauma {
 		Net::Endpoint server;
 		Status status = Status::Disconnected;
 		uint8_t playerId = 0;
-		ObjectState predicted;
+		RagdollState predicted;
+		std::array<olc::vf2d, PartCount> previousLocal{};
+		std::vector<PredictedRagdoll> predictedRagdolls;
 		std::vector<PredictedBody> predictedBodies;
+		std::array<SnapshotChunk, MaxPlayers + 1> snapshotChunks{};
+		uint32_t assemblingTick = 0;
+		uint8_t assemblingCount = 0;
 		std::vector<ObjectView> players;
 		std::deque<SentInput> pending;
 		uint32_t nextInputSequence = 1;

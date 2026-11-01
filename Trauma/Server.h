@@ -37,9 +37,9 @@ namespace Trauma
 			bool bActive = false;
 			Net::Endpoint endpoint;
 			uint8_t id = 0;
-			ObjectState player;
+			RagdollState player;
 			std::deque<QueuedInput> inputs;
-			float lastMoveX = 0.0f;
+			InputState lastInput;
 			int missingInputTicks = 0;
 			uint32_t highestReceived = 0;
 			std::chrono::steady_clock::time_point lastSeen;

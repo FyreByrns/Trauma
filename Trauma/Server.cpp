@@ -105,56 +105,72 @@ namespace Trauma {
 	}
 
 	void Server::StepSimulation() {
+		std::vector<RagdollState*> ragdolls;
 		std::vector<ObjectState*> activeBodies;
-		activeBodies.reserve(MaxPlayers + TestBodyCount);
+		ragdolls.reserve(MaxPlayers);
+		activeBodies.reserve(TestBodyCount);
 		for (ClientSlot& client : clients) {
 			if (!client.bActive)
 				continue;
 
-			InputState input;
+			InputState input = client.lastInput;
+			input.jump = false;
 			if (!client.inputs.empty()) {
 				const QueuedInput queued = client.inputs.front();
 				client.inputs.pop_front();
-				client.player.lastInput = queued.sequence;
+				client.player.parts[Torso].lastInput = queued.sequence;
 				input = queued.input;
-				client.lastMoveX = input.moveX;
+				client.lastInput = input;
 				client.missingInputTicks = 0;
 			}
-			else if (client.missingInputTicks++ < Net::InputRedundancy) {
-				input.moveX = client.lastMoveX;
+			else if (client.missingInputTicks++ >= Net::InputRedundancy) {
+				input.moveX = 0.0f;
+				input.climb = 0.0f;
+				input.run = false;
+				input.crouch = false;
+				input.crawl = false;
+				input.reachLeft = false;
+				input.reachRight = false;
 			}
-			ApplyPlayerInput(client.player, input);
-			activeBodies.push_back(&client.player);
+			ApplyRagdollInput(client.player, input);
+			ragdolls.push_back(&client.player);
 		}
 		for (ObjectState& body : bodies)
 			activeBodies.push_back(&body);
 
-		StepPhysics(activeBodies, FixedDeltaTime);
+		StepRagdollPhysics(ragdolls, activeBodies, FixedDeltaTime);
 		++tick;
 	}
 
 	void Server::BroadcastSnapshot() {
-		Net::PacketWriter packet(Net::MessageType::Snapshot);
-		packet.Write(tick);
-
-		uint8_t count = static_cast<uint8_t>(bodies.size());
+		uint8_t count = 1;
 		for (const ClientSlot& client : clients)
 			if (client.bActive)
 				++count;
+
+		uint8_t index = 0;
+		for (const ClientSlot& player : clients) {
+			if (!player.bActive)
+				continue;
+			Net::PacketWriter packet(Net::MessageType::Snapshot);
+			packet.Write(tick);
+			packet.Write(index++);
+			packet.Write(count);
+			Net::WriteRagdoll(packet, player.id, player.player);
+			for (const ClientSlot& recipient : clients)
+				if (recipient.bActive)
+					socket.SendTo(recipient.endpoint, packet.Data().data(), packet.Size());
+		}
+
+		Net::PacketWriter packet(Net::MessageType::Snapshot);
+		packet.Write(tick);
+		packet.Write(index);
 		packet.Write(count);
-
-		for (const ClientSlot& client : clients) {
-			if (client.bActive)
-				Net::WriteObjectState(packet, client.id, client.player);
-		}
-
-		for (size_t index = 0; index < bodies.size(); ++index)
-			Net::WriteObjectState(packet, static_cast<uint8_t>(MaxPlayers + index + 1), bodies[index]);
-
-		for (const ClientSlot& client : clients) {
-			if (client.bActive)
-				socket.SendTo(client.endpoint, packet.Data().data(), packet.Size());
-		}
+		for (size_t body = 0; body < bodies.size(); ++body)
+			Net::WriteObjectState(packet, static_cast<uint8_t>(MaxPlayers + body + 1), bodies[body]);
+		for (const ClientSlot& recipient : clients)
+			if (recipient.bActive)
+				socket.SendTo(recipient.endpoint, packet.Data().data(), packet.Size());
 	}
 
 	void Server::DropTimedOutClients() {
@@ -189,7 +205,7 @@ namespace Trauma {
 			client.endpoint = endpoint;
 			client.id = static_cast<uint8_t>(index + 1);
 			client.lastSeen = std::chrono::steady_clock::now();
-			client.player.position = { -200.0f + static_cast<float>(index % 10) * 25.0f, -100.0f - static_cast<float>(index / 10) * 30.0f };
+			client.player = CreateRagdoll({ -200.0f + static_cast<float>(index % 10) * 40.0f, -100.0f - static_cast<float>(index / 10) * 80.0f });
 
 			std::cout << "[server] player " << static_cast<int>(client.id)
 				<< " connected from " << endpoint.ToString() << std::endl;
@@ -229,7 +245,8 @@ namespace Trauma {
 		for (uint8_t index = 0; index < count; ++index) {
 			uint32_t sequence = 0;
 			InputState input;
-			if (!Net::ReadInputEntry(reader, sequence, input) || !std::isfinite(input.moveX))
+			if (!Net::ReadInputEntry(reader, sequence, input) || !std::isfinite(input.moveX) || !std::isfinite(input.aim.x) || !std::isfinite(input.aim.y)
+				|| std::abs(input.aim.x) > 2000.0f || std::abs(input.aim.y) > 2000.0f)
 				return;
 
 			entries[index] = { sequence, input };
@@ -252,7 +269,7 @@ namespace Trauma {
 	void Server::SendWelcome(const ClientSlot& client) {
 		Net::PacketWriter packet(Net::MessageType::Welcome);
 		packet.Write(Net::ProtocolVersion);
-		Net::WriteObjectState(packet, client.id, client.player);
+		Net::WriteRagdoll(packet, client.id, client.player);
 		socket.SendTo(client.endpoint, packet.Data().data(), packet.Size());
 	}
 }

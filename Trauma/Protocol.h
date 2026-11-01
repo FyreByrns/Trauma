@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 1;
+	constexpr uint32_t ProtocolVersion = 7;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -103,18 +103,81 @@ namespace Trauma::Net {
 		return true;
 	}
 
-	inline void WriteInputEntry(PacketWriter& packet, uint32_t sequence, const InputState& input) {
-		packet.Write(sequence);
+	inline void WriteInput(PacketWriter& packet, const InputState& input) {
 		packet.Write(input.moveX);
 		packet.Write(static_cast<uint8_t>(input.jump ? 1 : 0));
+		packet.Write(static_cast<uint8_t>((input.reachLeft ? 1 : 0) | (input.reachRight ? 2 : 0)
+			| (input.run ? 4 : 0) | (input.crouch ? 8 : 0) | (input.crawl ? 16 : 0)
+			| (input.climb < 0.0f ? 32 : 0) | (input.climb > 0.0f ? 64 : 0)));
+		packet.Write(input.aim.x);
+		packet.Write(input.aim.y);
+	}
+
+	inline bool ReadInput(PacketReader& reader, InputState& input) {
+		uint8_t jump = 0;
+		uint8_t reach = 0;
+		if (!reader.Read(input.moveX) || !reader.Read(jump) || !reader.Read(reach)
+			|| !reader.Read(input.aim.x) || !reader.Read(input.aim.y))
+			return false;
+		input.jump = jump != 0;
+		input.reachLeft = (reach & 1) != 0;
+		input.reachRight = (reach & 2) != 0;
+		input.run = (reach & 4) != 0;
+		input.crouch = (reach & 8) != 0;
+		input.crawl = (reach & 16) != 0;
+		input.climb = ((reach & 64) ? 1.0f : 0.0f) - ((reach & 32) ? 1.0f : 0.0f);
+		return true;
+	}
+
+	inline void WriteInputEntry(PacketWriter& packet, uint32_t sequence, const InputState& input) {
+		packet.Write(sequence);
+		WriteInput(packet, input);
 	}
 
 	inline bool ReadInputEntry(PacketReader& reader, uint32_t& sequence, InputState& input) {
-		uint8_t jump = 0;
-		if (!reader.Read(sequence) || !reader.Read(input.moveX) || !reader.Read(jump))
-			return false;
+		return reader.Read(sequence) && ReadInput(reader, input);
+	}
 
-		input.jump = jump != 0;
+	inline void WriteRagdoll(PacketWriter& packet, uint8_t id, const RagdollState& ragdoll) {
+		packet.Write(id);
+		packet.Write(ragdoll.parts[Torso].lastInput);
+		packet.Write(ragdoll.facing);
+		packet.Write(ragdoll.gaitPhase);
+		packet.Write(ragdoll.ladder);
+		packet.Write(ragdoll.ladderDetachTime);
+		WriteInput(packet, ragdoll.input);
+		for (const HandGrip& grip : ragdoll.grips) {
+			packet.Write(grip.target);
+			packet.Write(grip.anchor.x);
+			packet.Write(grip.anchor.y);
+		}
+		for (const ObjectState& part : ragdoll.parts) {
+			packet.Write(part.position.x);
+			packet.Write(part.position.y);
+			packet.Write(part.velocity.x);
+			packet.Write(part.velocity.y);
+			packet.Write(static_cast<uint8_t>(part.grounded ? 1 : 0));
+		}
+	}
+
+	inline bool ReadRagdoll(PacketReader& reader, uint8_t& id, RagdollState& ragdoll) {
+		ragdoll = CreateRagdoll({0.0f, 0.0f});
+		if (!reader.Read(id) || !reader.Read(ragdoll.parts[Torso].lastInput)
+			|| !reader.Read(ragdoll.facing) || !reader.Read(ragdoll.gaitPhase)
+			|| !reader.Read(ragdoll.ladder) || ragdoll.ladder > TestLadders().size()
+			|| !reader.Read(ragdoll.ladderDetachTime) || !ReadInput(reader, ragdoll.input))
+			return false;
+		for (HandGrip& grip : ragdoll.grips)
+			if (!reader.Read(grip.target) || !reader.Read(grip.anchor.x) || !reader.Read(grip.anchor.y)
+				|| grip.target > TestTerrain().size() + TestBodyCount)
+				return false;
+		for (ObjectState& part : ragdoll.parts) {
+			uint8_t grounded = 0;
+			if (!reader.Read(part.position.x) || !reader.Read(part.position.y)
+				|| !reader.Read(part.velocity.x) || !reader.Read(part.velocity.y) || !reader.Read(grounded))
+				return false;
+			part.grounded = grounded != 0;
+		}
 		return true;
 	}
 }

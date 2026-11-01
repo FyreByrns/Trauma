@@ -31,6 +31,7 @@ namespace Trauma {
 		void DrawScene();
 		void DrawObjects();
 		void DrawObject(const olc::vf2d& position, float radius, olc::Pixel colour);
+		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
 
 	private:
 		std::string host;

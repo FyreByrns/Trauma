@@ -21,7 +21,7 @@ namespace Trauma
 		const float minimumReach = std::abs(upper - lower) + 0.0001f;
 		const float maximumReach = upper + lower - 0.0001f;
 		const float reach = std::clamp(desired, minimumReach, maximumReach);
-		const olc::vf2d direction = offset.norm();
+		const olc::vf2d direction = desired > 0.0001f ? offset / desired : olc::vf2d{ 1.0f, 0.0f };
 		const float cosine = std::clamp(
 			(upper * upper + reach * reach - lower * lower) / (2.0f * upper * reach),
 			-1.0f,
