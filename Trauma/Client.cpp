@@ -32,6 +32,7 @@ namespace Trauma {
 		predictedBodies.clear();
 		predictedRagdolls.clear();
 		players.clear();
+		worldItems = {};
 		assemblingTick = 0;
 		assemblingCount = 0;
 		nextInputSequence = 1;
@@ -52,6 +53,7 @@ namespace Trauma {
 		predictedBodies.clear();
 		predictedRagdolls.clear();
 		players.clear();
+		worldItems = {};
 		assemblingTick = 0;
 		assemblingCount = 0;
 		playerId = 0;
@@ -84,7 +86,10 @@ namespace Trauma {
 			for (size_t i = 0; i < PartCount; ++i)
 				ragdoll.previous[i] = ragdoll.state.parts[i].position;
 		for (PredictedBody& body : predictedBodies)
+		{
 			body.previousPosition = body.state.position;
+			body.previousAngle = body.state.angle;
+		}
 		StepPrediction(input);
 		predicted.parts[Torso].lastInput = sent.sequence;
 
@@ -164,10 +169,35 @@ namespace Trauma {
 		return players;
 	}
 
-	bool Client::GetPredictedBodyPosition(uint8_t id, float alpha, olc::vf2d& position) const {
+	const std::array<Client::WorldItem, MaxWorldItems>& Client::GetWorldItems() const {
+		return worldItems;
+	}
+
+	void Client::MoveItem(bool fromClothing, size_t from, bool toClothing, size_t to) {
+		if (status != Status::Connected)
+			return;
+		Net::PacketWriter packet(Net::MessageType::Inventory);
+		Net::WriteInventoryMove(packet, fromClothing, static_cast<uint8_t>(from), toClothing,
+			static_cast<uint8_t>(to));
+		SendPacket(packet);
+		MoveInventoryItem(predicted.inventory, fromClothing, from, toClothing, to);
+	}
+
+	void Client::DropItem(bool fromClothing, size_t index, const olc::vf2d& position) {
+		if (status != Status::Connected)
+			return;
+		Net::PacketWriter packet(Net::MessageType::Inventory);
+		Net::WriteInventoryDrop(packet, fromClothing, static_cast<uint8_t>(index), position);
+		SendPacket(packet);
+		TakeInventoryItem(predicted.inventory, fromClothing, index);
+	}
+
+	bool Client::GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const {
+		const float blend = std::clamp(alpha, 0.0f, 1.0f);
 		for (const PredictedBody& body : predictedBodies) {
 			if (body.id == id) {
-				position = body.previousPosition.lerp(body.state.position, std::clamp(alpha, 0.0f, 1.0f));
+				position = body.previousPosition.lerp(body.state.position, blend);
+				angle = body.previousAngle + std::remainder(body.state.angle - body.previousAngle, 6.2831853f) * blend;
 				return true;
 			}
 		}
@@ -240,6 +270,7 @@ namespace Trauma {
 		predictedBodies.clear();
 		predictedRagdolls.clear();
 		players.clear();
+		worldItems = {};
 		assemblingTick = 0;
 		assemblingCount = 0;
 		nextInputSequence = 1;
@@ -264,6 +295,29 @@ namespace Trauma {
 				uint8_t id = 0;
 				if (!Net::ReadObjectState(reader, id, chunk.objects[i]) || id != MaxPlayers + i + 1)
 					return;
+			}
+			uint8_t itemCount = 0;
+			if (!reader.Read(itemCount) || itemCount != MaxWorldItems)
+				return;
+			for (size_t i = 0; i < MaxWorldItems; ++i) {
+				uint8_t kind = 0;
+				olc::vf2d position;
+				olc::vf2d velocity;
+				float angle = 0.0f;
+				float spin = 0.0f;
+				if (!reader.Read(kind) || !reader.Read(position.x) || !reader.Read(position.y)
+					|| !reader.Read(velocity.x) || !reader.Read(velocity.y)
+					|| !reader.Read(angle) || !reader.Read(spin)
+					|| kind > static_cast<uint8_t>(Item::Boots)
+					|| !std::isfinite(position.x) || !std::isfinite(position.y)
+					|| !std::isfinite(velocity.x) || !std::isfinite(velocity.y)
+					|| !std::isfinite(angle) || !std::isfinite(spin))
+					return;
+				chunk.items[i].item = static_cast<Item>(kind);
+				chunk.items[i].body = CreateItemBody(static_cast<Item>(kind), position);
+				chunk.items[i].body.velocity = velocity;
+				chunk.items[i].body.angle = angle;
+				chunk.items[i].body.angularVelocity = spin;
 			}
 		}
 		else if (!Net::ReadRagdoll(reader, chunk.id, chunk.ragdoll) || chunk.id == 0 || chunk.id > MaxPlayers)
@@ -320,14 +374,22 @@ namespace Trauma {
 			const uint8_t id = static_cast<uint8_t>(MaxPlayers + i + 1);
 			const ObjectState& incoming = snapshotChunks[count - 1].objects[i];
 			PredictedBody body{id, incoming, incoming.position};
+			body.previousAngle = incoming.angle;
 			for (const PredictedBody& existing : predictedBodies)
-				if (existing.id == id)
+				if (existing.id == id) {
 					body.previousPosition = existing.previousPosition;
+					body.previousAngle = existing.previousAngle;
+				}
 			receivedBodies.push_back(body);
 			ObjectView view;
 			view.id = id;
 			view.position = view.target = incoming.position;
 			view.radius = incoming.radius;
+			view.shape = incoming.shape;
+			view.halfExtents = incoming.halfExtents;
+			view.vertexCount = incoming.vertexCount;
+			view.localVertices = incoming.localVertices;
+			view.angle = incoming.angle;
 			received.push_back(view);
 		}
 
@@ -335,6 +397,7 @@ namespace Trauma {
 		predictedRagdolls = std::move(receivedRagdolls);
 		predictedBodies = std::move(receivedBodies);
 		players = std::move(received);
+		worldItems = snapshotChunks[count - 1].items;
 		Reconcile(authoritative, authoritative.parts[Torso].lastInput);
 		snapshotTimer = 0.0f;
 	}
@@ -366,7 +429,9 @@ namespace Trauma {
 			ragdolls.push_back(&predicted);
 		for (PredictedBody& body : predictedBodies)
 			bodies.push_back(&body.state);
-		StepRagdollPhysics(ragdolls, bodies, FixedDeltaTime);
+		for (WorldItem& item : worldItems)
+			bodies.push_back(&item.body);
+		StepPhysics(ragdolls, bodies, FixedDeltaTime);
 	}
 
 	void Client::SmoothRemoteObjects(float fElapsedTime) {

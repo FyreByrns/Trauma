@@ -55,12 +55,15 @@ namespace Trauma
 		ClientSlot* AllocateClient(const Net::Endpoint& endpoint);
 		void HandleHello(const Net::Endpoint& endpoint, Net::PacketReader& reader);
 		void HandleInput(const Net::Endpoint& endpoint, Net::PacketReader& reader);
+		void HandleInventory(const Net::Endpoint& endpoint, Net::PacketReader& reader);
 		void SendWelcome(const ClientSlot& client);
 
 	private:
 		Net::Socket socket;
 		std::array<ClientSlot, MaxPlayers> clients;
 		std::array<ObjectState, TestBodyCount> bodies;
+		std::array<ObjectState, MaxWorldItems> items;
+		std::array<Item, MaxWorldItems> itemKinds{};
 		std::thread worker;
 		std::atomic<bool> running = false;
 		uint32_t tick = 0;

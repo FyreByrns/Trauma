@@ -47,6 +47,10 @@ namespace Trauma {
 		for (ClientSlot& client : clients)
 			client = ClientSlot{};
 		bodies = CreateTestBodies();
+		for (size_t index = 0; index < items.size(); ++index) {
+			items[index] = DeadItemBody();
+			itemKinds[index] = Item::None;
+		}
 
 		tick = 0;
 		std::cout << "[server] listening on port " << socket.GetPort() << std::endl;
@@ -98,6 +102,9 @@ namespace Trauma {
 				case Net::MessageType::Input:
 					HandleInput(from, reader);
 					break;
+				case Net::MessageType::Inventory:
+					HandleInventory(from, reader);
+					break;
 				default:
 					break;
 			}
@@ -137,8 +144,10 @@ namespace Trauma {
 		}
 		for (ObjectState& body : bodies)
 			activeBodies.push_back(&body);
+		for (ObjectState& item : items)
+			activeBodies.push_back(&item);
 
-		StepRagdollPhysics(ragdolls, activeBodies, FixedDeltaTime);
+		StepPhysics(ragdolls, activeBodies, FixedDeltaTime);
 		++tick;
 	}
 
@@ -168,6 +177,7 @@ namespace Trauma {
 		packet.Write(count);
 		for (size_t body = 0; body < bodies.size(); ++body)
 			Net::WriteObjectState(packet, static_cast<uint8_t>(MaxPlayers + body + 1), bodies[body]);
+		Net::WriteWorldItems(packet, itemKinds, items);
 		for (const ClientSlot& recipient : clients)
 			if (recipient.bActive)
 				socket.SendTo(recipient.endpoint, packet.Data().data(), packet.Size());
@@ -264,6 +274,47 @@ namespace Trauma {
 
 		while (client->inputs.size() > 32)
 			client->inputs.pop_front();
+	}
+
+	void Server::HandleInventory(const Net::Endpoint& endpoint, Net::PacketReader& reader) {
+		ClientSlot* client = FindClient(endpoint);
+		if (!client)
+			return;
+
+		uint8_t action = 0;
+		if (!reader.Read(action))
+			return;
+		client->lastSeen = std::chrono::steady_clock::now();
+
+		if (action == static_cast<uint8_t>(Net::InventoryAction::Move)) {
+			uint8_t fromClothing = 0, from = 0, toClothing = 0, to = 0;
+			if (!reader.Read(fromClothing) || !reader.Read(from) || !reader.Read(toClothing) || !reader.Read(to))
+				return;
+			MoveInventoryItem(client->player.inventory, fromClothing != 0, from, toClothing != 0, to);
+			return;
+		}
+
+		if (action != static_cast<uint8_t>(Net::InventoryAction::Drop))
+			return;
+		uint8_t fromClothing = 0, from = 0;
+		olc::vf2d position;
+		if (!reader.Read(fromClothing) || !reader.Read(from) || !reader.Read(position.x) || !reader.Read(position.y))
+			return;
+		if (!std::isfinite(position.x) || !std::isfinite(position.y)
+			|| std::abs(position.x) > 2000.0f || position.y < -800.0f || position.y > 1000.0f)
+			return;
+
+		for (size_t slot = 0; slot < items.size(); ++slot) {
+			if (itemKinds[slot] != Item::None)
+				continue;
+			const Item item = TakeInventoryItem(client->player.inventory, fromClothing != 0, from);
+			if (item == Item::None)
+				return;
+			itemKinds[slot] = item;
+			items[slot] = CreateItemBody(item, position);
+			items[slot].velocity = { 0.0f, 40.0f };
+			return;
+		}
 	}
 
 	void Server::SendWelcome(const ClientSlot& client) {

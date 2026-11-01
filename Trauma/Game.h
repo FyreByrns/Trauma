@@ -30,8 +30,17 @@ namespace Trauma {
 		void SetCameraZoom(float zoom);
 		void DrawScene();
 		void DrawObjects();
-		void DrawObject(const olc::vf2d& position, float radius, olc::Pixel colour);
+		void DrawObject(const Client::ObjectView& object, const olc::vf2d& position,
+			float angle, olc::Pixel colour);
 		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
+		void DrawHud();
+		void DrawHotbar(const olc::vf2d& origin, const Inventory& inventory);
+		void DrawClothingSlots(const olc::vf2d& origin, const Inventory& inventory);
+		void DrawSlot(const olc::vf2d& origin, float size, Item item, bool highlighted);
+		void DrawItem(Item item, const ObjectState& body);
+		void UpdateDrag();
+		olc::vf2d HudOrigin();
+		bool SlotAt(const olc::vf2d& point, bool& clothing, size_t& index);
 
 	private:
 		std::string host;
@@ -51,5 +60,11 @@ namespace Trauma {
 		olc::vf2d cameraTarget = { 0.0f, 0.0f };
 		float cameraZoom = 2.4f;
 		bool cameraInitialised = false;
+
+		uint8_t hotbarSelection = 0;
+		bool dragging = false;
+		bool dragFromClothing = false;
+		size_t dragIndex = 0;
+		Item dragItem = Item::None;
 	};
 }

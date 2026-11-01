@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 7;
+	constexpr uint32_t ProtocolVersion = 13;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -18,7 +18,13 @@ namespace Trauma::Net {
 		Hello = 1,
 		Welcome = 2,
 		Input = 3,
-		Snapshot = 4
+		Snapshot = 4,
+		Inventory = 5
+	};
+
+	enum class InventoryAction : uint8_t {
+		Move = 0,
+		Drop = 1
 	};
 
 	class PacketWriter {
@@ -82,12 +88,26 @@ namespace Trauma::Net {
 		packet.Write(player.velocity.y);
 		packet.Write(player.radius);
 		packet.Write(player.inverseMass);
+		packet.Write(static_cast<uint8_t>(player.shape));
+		packet.Write(player.halfExtents.x);
+		packet.Write(player.halfExtents.y);
+		const int vertices = player.shape == Shape::Polygon
+			? static_cast<int>(std::min<int>(player.vertexCount, MaxPolygonVertices)) : 0;
+		packet.Write(static_cast<uint8_t>(vertices));
+		for (int i = 0; i < vertices; ++i) {
+			packet.Write(player.localVertices[i].x);
+			packet.Write(player.localVertices[i].y);
+		}
+		packet.Write(player.angle);
+		packet.Write(player.angularVelocity);
 		packet.Write(static_cast<uint8_t>(player.grounded ? 1 : 0));
 		packet.Write(player.lastInput);
 	}
 
 	inline bool ReadObjectState(PacketReader& reader, uint8_t& id, ObjectState& player) {
+		uint8_t shape = 0;
 		uint8_t grounded = 0;
+		uint8_t vertices = 0;
 		if (!reader.Read(id)
 			|| !reader.Read(player.position.x)
 			|| !reader.Read(player.position.y)
@@ -95,10 +115,47 @@ namespace Trauma::Net {
 			|| !reader.Read(player.velocity.y)
 			|| !reader.Read(player.radius)
 			|| !reader.Read(player.inverseMass)
+			|| !reader.Read(shape)
+			|| !reader.Read(player.halfExtents.x)
+			|| !reader.Read(player.halfExtents.y)
+			|| !reader.Read(vertices) || vertices > MaxPolygonVertices)
+			return false;
+		for (uint8_t i = 0; i < vertices; ++i)
+			if (!reader.Read(player.localVertices[i].x) || !reader.Read(player.localVertices[i].y))
+				return false;
+		if (!reader.Read(player.angle)
+			|| !reader.Read(player.angularVelocity)
 			|| !reader.Read(grounded)
 			|| !reader.Read(player.lastInput))
 			return false;
 
+		if (shape > static_cast<uint8_t>(Shape::Polygon)
+			|| !std::isfinite(player.position.x) || !std::isfinite(player.position.y)
+			|| !std::isfinite(player.velocity.x) || !std::isfinite(player.velocity.y)
+			|| !std::isfinite(player.radius) || !std::isfinite(player.inverseMass)
+			|| !std::isfinite(player.halfExtents.x) || !std::isfinite(player.halfExtents.y)
+			|| player.halfExtents.x < 0.0f || player.halfExtents.y < 0.0f
+			|| player.halfExtents.x > 4096.0f || player.halfExtents.y > 4096.0f
+			|| !std::isfinite(player.angle) || !std::isfinite(player.angularVelocity))
+			return false;
+
+		player.shape = static_cast<Shape>(shape);
+		player.vertexCount = 0;
+		player.inverseInertia = 0.0f;
+		if (player.shape == Shape::Polygon) {
+			if (vertices < 3)
+				return false;
+			for (uint8_t i = 0; i < vertices; ++i) {
+				const olc::vf2d& vertex = player.localVertices[i];
+				if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y)
+					|| std::abs(vertex.x) > 4096.0f || std::abs(vertex.y) > 4096.0f)
+					return false;
+			}
+			player.vertexCount = vertices;
+			player.inverseInertia = PolygonInverseInertia(player.inverseMass, player.localVertices.data(), vertices);
+		}
+		else if (vertices != 0)
+			return false;
 		player.grounded = grounded != 0;
 		return true;
 	}
@@ -111,13 +168,15 @@ namespace Trauma::Net {
 			| (input.climb < 0.0f ? 32 : 0) | (input.climb > 0.0f ? 64 : 0)));
 		packet.Write(input.aim.x);
 		packet.Write(input.aim.y);
+		packet.Write(input.hotbar);
 	}
 
 	inline bool ReadInput(PacketReader& reader, InputState& input) {
 		uint8_t jump = 0;
 		uint8_t reach = 0;
 		if (!reader.Read(input.moveX) || !reader.Read(jump) || !reader.Read(reach)
-			|| !reader.Read(input.aim.x) || !reader.Read(input.aim.y))
+			|| !reader.Read(input.aim.x) || !reader.Read(input.aim.y)
+			|| !reader.Read(input.hotbar) || input.hotbar >= HotbarSlots)
 			return false;
 		input.jump = jump != 0;
 		input.reachLeft = (reach & 1) != 0;
@@ -138,6 +197,38 @@ namespace Trauma::Net {
 		return reader.Read(sequence) && ReadInput(reader, input);
 	}
 
+	inline void WriteInventoryMove(PacketWriter& packet, bool fromClothing, uint8_t from,
+		bool toClothing, uint8_t to) {
+		packet.Write(static_cast<uint8_t>(InventoryAction::Move));
+		packet.Write(static_cast<uint8_t>(fromClothing ? 1 : 0));
+		packet.Write(from);
+		packet.Write(static_cast<uint8_t>(toClothing ? 1 : 0));
+		packet.Write(to);
+	}
+
+	inline void WriteInventoryDrop(PacketWriter& packet, bool fromClothing, uint8_t from,
+		const olc::vf2d& position) {
+		packet.Write(static_cast<uint8_t>(InventoryAction::Drop));
+		packet.Write(static_cast<uint8_t>(fromClothing ? 1 : 0));
+		packet.Write(from);
+		packet.Write(position.x);
+		packet.Write(position.y);
+	}
+
+	inline void WriteWorldItems(PacketWriter& packet, const std::array<Item, MaxWorldItems>& kinds,
+		const std::array<ObjectState, MaxWorldItems>& bodies) {
+		packet.Write(static_cast<uint8_t>(MaxWorldItems));
+		for (size_t i = 0; i < MaxWorldItems; ++i) {
+			packet.Write(static_cast<uint8_t>(kinds[i]));
+			packet.Write(bodies[i].position.x);
+			packet.Write(bodies[i].position.y);
+			packet.Write(bodies[i].velocity.x);
+			packet.Write(bodies[i].velocity.y);
+			packet.Write(bodies[i].angle);
+			packet.Write(bodies[i].angularVelocity);
+		}
+	}
+
 	inline void WriteRagdoll(PacketWriter& packet, uint8_t id, const RagdollState& ragdoll) {
 		packet.Write(id);
 		packet.Write(ragdoll.parts[Torso].lastInput);
@@ -150,7 +241,13 @@ namespace Trauma::Net {
 			packet.Write(grip.target);
 			packet.Write(grip.anchor.x);
 			packet.Write(grip.anchor.y);
+			packet.Write(grip.angleOffset);
 		}
+		for (const Item item : ragdoll.inventory.hotbar)
+			packet.Write(static_cast<uint8_t>(item));
+		for (const Item item : ragdoll.inventory.clothing)
+			packet.Write(static_cast<uint8_t>(item));
+		packet.Write(ragdoll.inventory.selected);
 		for (const ObjectState& part : ragdoll.parts) {
 			packet.Write(part.position.x);
 			packet.Write(part.position.y);
@@ -169,8 +266,24 @@ namespace Trauma::Net {
 			return false;
 		for (HandGrip& grip : ragdoll.grips)
 			if (!reader.Read(grip.target) || !reader.Read(grip.anchor.x) || !reader.Read(grip.anchor.y)
-				|| grip.target > TestTerrain().size() + TestBodyCount)
+				|| !reader.Read(grip.angleOffset) || !std::isfinite(grip.angleOffset)
+				|| grip.target > TestTerrain().size() + TestBodyCount + MaxWorldItems)
 				return false;
+		for (Item& item : ragdoll.inventory.hotbar) {
+			uint8_t stored = 0;
+			if (!reader.Read(stored) || stored > static_cast<uint8_t>(Item::Boots))
+				return false;
+			item = static_cast<Item>(stored);
+		}
+		for (Item& item : ragdoll.inventory.clothing) {
+			uint8_t stored = 0;
+			if (!reader.Read(stored) || stored > static_cast<uint8_t>(Item::Boots)
+				|| (stored != 0 && !IsClothing(static_cast<Item>(stored))))
+				return false;
+			item = static_cast<Item>(stored);
+		}
+		if (!reader.Read(ragdoll.inventory.selected) || ragdoll.inventory.selected >= HotbarSlots)
+			return false;
 		for (ObjectState& part : ragdoll.parts) {
 			uint8_t grounded = 0;
 			if (!reader.Read(part.position.x) || !reader.Read(part.position.y)

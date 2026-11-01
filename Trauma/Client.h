@@ -22,6 +22,16 @@ namespace Trauma {
 			olc::vf2d target;
 			float radius = PlayerRadius;
 			float facing = 1.0f;
+			Shape shape = Shape::Circle;
+			olc::vf2d halfExtents = { 0.0f, 0.0f };
+			uint8_t vertexCount = 0;
+			std::array<olc::vf2d, MaxPolygonVertices> localVertices{};
+			float angle = 0.0f;
+		};
+
+		struct WorldItem {
+			Item item = Item::None;
+			ObjectState body;
 		};
 
 		Client() = default;
@@ -40,7 +50,10 @@ namespace Trauma {
 		std::array<olc::vf2d, PartCount> GetLocalPose(float alpha) const;
 		bool GetRemotePose(uint8_t id, float alpha, std::array<olc::vf2d, PartCount>& pose, float& facing) const;
 		const std::vector<ObjectView>& GetObjects() const;
-		bool GetPredictedBodyPosition(uint8_t id, float alpha, olc::vf2d& position) const;
+		const std::array<WorldItem, MaxWorldItems>& GetWorldItems() const;
+		void MoveItem(bool fromClothing, size_t from, bool toClothing, size_t to);
+		void DropItem(bool fromClothing, size_t index, const olc::vf2d& position);
+		bool GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const;
 
 	private:
 		struct SentInput {
@@ -59,12 +72,14 @@ namespace Trauma {
 			uint8_t id = 0;
 			RagdollState ragdoll;
 			std::array<ObjectState, TestBodyCount> objects;
+			std::array<WorldItem, MaxWorldItems> items{};
 		};
 
 		struct PredictedBody {
 			uint8_t id = 0;
 			ObjectState state;
 			olc::vf2d previousPosition;
+			float previousAngle = 0.0f;
 		};
 
 		void SendHello();
@@ -90,6 +105,7 @@ namespace Trauma {
 		uint32_t assemblingTick = 0;
 		uint8_t assemblingCount = 0;
 		std::vector<ObjectView> players;
+		std::array<WorldItem, MaxWorldItems> worldItems{};
 		std::deque<SentInput> pending;
 		uint32_t nextInputSequence = 1;
 		float connectingTime = 0.0f;
