@@ -53,6 +53,8 @@ namespace Trauma {
 		const std::array<WorldItem, MaxWorldItems>& GetWorldItems() const;
 		void MoveItem(bool fromClothing, size_t from, bool toClothing, size_t to);
 		void DropItem(bool fromClothing, size_t index, const olc::vf2d& position);
+		bool GetGrippedItem(size_t& index) const;
+		void PickupItem(size_t index);
 		bool GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const;
 
 	private:

@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 13;
+	constexpr uint32_t ProtocolVersion = 14;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -24,7 +24,8 @@ namespace Trauma::Net {
 
 	enum class InventoryAction : uint8_t {
 		Move = 0,
-		Drop = 1
+		Drop = 1,
+		Pickup = 2
 	};
 
 	class PacketWriter {
@@ -213,6 +214,11 @@ namespace Trauma::Net {
 		packet.Write(from);
 		packet.Write(position.x);
 		packet.Write(position.y);
+	}
+
+	inline void WriteInventoryPickup(PacketWriter& packet, uint8_t index) {
+		packet.Write(static_cast<uint8_t>(InventoryAction::Pickup));
+		packet.Write(index);
 	}
 
 	inline void WriteWorldItems(PacketWriter& packet, const std::array<Item, MaxWorldItems>& kinds,

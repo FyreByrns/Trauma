@@ -294,6 +294,36 @@ namespace Trauma {
 			return;
 		}
 
+		if (action == static_cast<uint8_t>(Net::InventoryAction::Pickup)) {
+			uint8_t index = 0;
+			if (!reader.Read(index) || index >= items.size())
+				return;
+			if (itemKinds[index] == Item::None)
+				return;
+			Inventory& inventory = client->player.inventory;
+			size_t slot = inventory.hotbar.size();
+			for (size_t free = 0; free < inventory.hotbar.size(); ++free)
+				if (inventory.hotbar[free] == Item::None) {
+					slot = free;
+					break;
+				}
+			if (slot >= inventory.hotbar.size())
+				return;
+			const uint8_t target = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + index + 1);
+			bool holding = false;
+			for (HandGrip& grip : client->player.grips)
+				if (grip.target == target) {
+					holding = true;
+					grip = {};
+				}
+			if (!holding)
+				return;
+			inventory.hotbar[slot] = itemKinds[index];
+			itemKinds[index] = Item::None;
+			items[index] = DeadItemBody();
+			return;
+		}
+
 		if (action != static_cast<uint8_t>(Net::InventoryAction::Drop))
 			return;
 		uint8_t fromClothing = 0, from = 0;

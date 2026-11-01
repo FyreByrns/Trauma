@@ -192,6 +192,40 @@ namespace Trauma {
 		TakeInventoryItem(predicted.inventory, fromClothing, index);
 	}
 
+	bool Client::GetGrippedItem(size_t& index) const {
+		const uint8_t base = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount);
+		for (const HandGrip& grip : predicted.grips) {
+			if (grip.target <= base)
+				continue;
+			const size_t candidate = static_cast<size_t>(grip.target) - base - 1;
+			if (candidate >= MaxWorldItems)
+				continue;
+			index = candidate;
+			return true;
+		}
+		return false;
+	}
+
+	void Client::PickupItem(size_t index) {
+		if (status != Status::Connected || index >= MaxWorldItems)
+			return;
+		if (worldItems[index].item == Item::None)
+			return;
+		Net::PacketWriter packet(Net::MessageType::Inventory);
+		Net::WriteInventoryPickup(packet, static_cast<uint8_t>(index));
+		SendPacket(packet);
+		for (Item& slot : predicted.inventory.hotbar)
+			if (slot == Item::None) {
+				slot = worldItems[index].item;
+				break;
+			}
+		const uint8_t target = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + index + 1);
+		for (HandGrip& grip : predicted.grips)
+			if (grip.target == target)
+				grip = {};
+		worldItems[index] = WorldItem{};
+	}
+
 	bool Client::GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const {
 		const float blend = std::clamp(alpha, 0.0f, 1.0f);
 		for (const PredictedBody& body : predictedBodies) {

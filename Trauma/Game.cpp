@@ -57,6 +57,11 @@ namespace Trauma {
 			for (size_t i = 0; i < slots.size(); ++i)
 				if (keyboard.GetKey(slots[i]).bPressed)
 					hotbarSelection = static_cast<uint8_t>(i);
+			if (keyboard.GetKey(olc::Key::E).bPressed) {
+				size_t index = 0;
+				if (client.GetGrippedItem(index))
+					client.PickupItem(index);
+			}
 		}
 
 
@@ -165,10 +170,9 @@ namespace Trauma {
 			}
 		}
 
-		if (keyboard.GetKey(olc::Key::Q).bHeld)
-			SetCameraZoom(cameraZoom - fElapsedTime * 1.6f);
-		if (keyboard.GetKey(olc::Key::E).bHeld)
-			SetCameraZoom(cameraZoom + fElapsedTime * 1.6f);
+		const int wheel = mouse.GetWheel();
+		if (wheel != 0)
+			SetCameraZoom(cameraZoom + static_cast<float>(wheel) * 0.15f);
 
 		camera.Update(fElapsedTime);
 	}
