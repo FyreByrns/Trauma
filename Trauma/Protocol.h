@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 5;
+	constexpr uint32_t ProtocolVersion = 0;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -74,7 +74,7 @@ namespace Trauma::Net {
 		size_t offset = 0;
 	};
 
-	inline void WritePlayerState(PacketWriter& packet, uint8_t id, const ObjectState& player) {
+	inline void WriteObjectState(PacketWriter& packet, uint8_t id, const ObjectState& player) {
 		packet.Write(id);
 		packet.Write(player.position.x);
 		packet.Write(player.position.y);
@@ -84,7 +84,7 @@ namespace Trauma::Net {
 		packet.Write(player.lastInput);
 	}
 
-	inline bool ReadPlayerState(PacketReader& reader, uint8_t& id, ObjectState& player) {
+	inline bool ReadObjectState(PacketReader& reader, uint8_t& id, ObjectState& player) {
 		uint8_t grounded = 0;
 		if (!reader.Read(id)
 			|| !reader.Read(player.position.x)

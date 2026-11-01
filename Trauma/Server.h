@@ -14,6 +14,7 @@ namespace Trauma
 	class Server
 	{
 	public:
+
 		Server() = default;
 		~Server();
 		Server(const Server&) = delete;

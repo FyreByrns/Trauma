@@ -182,7 +182,7 @@ namespace Trauma {
 
 		uint8_t id = 0;
 		ObjectState welcome;
-		if (!Net::ReadPlayerState(reader, id, welcome))
+		if (!Net::ReadObjectState(reader, id, welcome))
 			return;
 
 		if (status == Status::Connected && playerId == id)
@@ -217,7 +217,7 @@ namespace Trauma {
 		for (uint8_t index = 0; index < count; ++index) {
 			uint8_t id = 0;
 			ObjectState incoming;
-			if (!Net::ReadPlayerState(reader, id, incoming))
+			if (!Net::ReadObjectState(reader, id, incoming))
 				return;
 
 			if (id == playerId) {

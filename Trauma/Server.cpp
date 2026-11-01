@@ -131,7 +131,7 @@ namespace Trauma {
 
 		for (const ClientSlot& client : clients) {
 			if (client.bActive)
-				Net::WritePlayerState(packet, client.id, client.player);
+				Net::WriteObjectState(packet, client.id, client.player);
 		}
 
 		for (const ClientSlot& client : clients) {
@@ -236,7 +236,7 @@ namespace Trauma {
 	void Server::SendWelcome(const ClientSlot& client) {
 		Net::PacketWriter packet(Net::MessageType::Welcome);
 		packet.Write(Net::ProtocolVersion);
-		Net::WritePlayerState(packet, client.id, client.player);
+		Net::WriteObjectState(packet, client.id, client.player);
 		socket.SendTo(client.endpoint, packet.Data().data(), packet.Size());
 	}
 }

@@ -143,8 +143,8 @@ namespace Trauma {
 	void Game::ResetCamera() {
 		camera = olc::utils::Camera2D(ScreenSize(), { cameraZoom, cameraZoom });
 		camera.SetWorldBoundary(
-			{ -ArenaHalfWidth, -ArenaHalfHeight },
-			{ ArenaHalfWidth * 2.0f, ArenaHalfHeight * 2.0f });
+			{ -4000, -4000 },
+			{ 4000, 4000 });
 		camera.EnableWorldBoundary(true);
 		camera.SetLazyFollowRate(9.0f);
 		cameraTarget = { 0.0f, 0.0f };
@@ -162,8 +162,8 @@ namespace Trauma {
 		cameraZoom = clamped;
 		camera = olc::utils::Camera2D(ScreenSize(), { cameraZoom, cameraZoom });
 		camera.SetWorldBoundary(
-			{ -ArenaHalfWidth, -ArenaHalfHeight },
-			{ ArenaHalfWidth * 2.0f, ArenaHalfHeight * 2.0f });
+			{ -4000, -4000 },
+			{ 4000, 4000 });
 		camera.EnableWorldBoundary(true);
 		camera.SetLazyFollowRate(9.0f);
 		camera.SetTarget(cameraTarget);
