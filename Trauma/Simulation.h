@@ -407,9 +407,9 @@ namespace Trauma {
 
 	inline std::array<ObjectState, TestBodyCount> CreateTestBodies() {
 		std::array<ObjectState, TestBodyCount> bodies{};
-		bodies[0] = CreateBox({ 30.0f, 100.0f }, { 22.0f, 22.0f }, 0.5f, 0.05f);
-		bodies[1] = CreateBox({ 30.0f, 40.0f }, { 22.0f, 22.0f }, 0.5f, -0.04f);
-		bodies[2] = CreateBox({ 125.0f, 60.0f }, { 30.0f, 14.0f }, 0.4f, 0.7f);
+		bodies[0] = CreateBox({ 30.0f, 100.0f }, { 22.0f, 22.0f }, 0.3f, 0.05f);
+		bodies[1] = CreateBox({ 30.0f, 40.0f }, { 22.0f, 22.0f }, 0.3f, -0.04f);
+		bodies[2] = CreateBox({ 125.0f, 60.0f }, { 30.0f, 14.0f }, 0.2f, 0.7f);
 		bodies[3].position = { 90.0f, -40.0f };
 		bodies[3].radius = 18.0f;
 		bodies[3].inverseMass = 0.5f;
