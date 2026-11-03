@@ -1,7 +1,10 @@
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "Game.h"
+#include "Ui.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <utility>
 
 namespace Trauma {
@@ -15,7 +18,7 @@ namespace Trauma {
 		constexpr float HotbarBottomMargin = 12.0f;
 
 		constexpr float GrabToggleWidth = 92.0f;
-		constexpr float GrabToggleGap = HotbarGroupSpacing;
+		constexpr float SlotCaptionFontSize = 12.0f;
 
 		constexpr float CameraLazyFollowRate = 9.0f;
 		constexpr float CameraMinZoom = 0.8f;
@@ -24,19 +27,25 @@ namespace Trauma {
 		const olc::vf2d CameraWorldOrigin = { -4000.0f, -4000.0f };
 		const olc::vf2d CameraWorldSize = { 8000.0f, 8000.0f };
 
-		float SlotPitch() {
-			return HotbarSlotSize + HotbarSlotGap;
-		}
+		constexpr const char* ItemPayload = "trauma/item";
 
-		olc::vf2d SlotOrigin(const olc::vf2d& origin, size_t index) {
-			return origin + olc::vf2d(SlotPitch() * static_cast<float>(index), 0.0f);
-		}
+		constexpr ImGuiWindowFlags OverlayFlags =
+			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
+			| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing
+			| ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus;
 
-		float GroupWidth(size_t slots) {
-			if (slots == 0)
-				return 0.0f;
-			return static_cast<float>(slots) * HotbarSlotSize
-				+ static_cast<float>(slots - 1) * HotbarSlotGap;
+		constexpr ImU32 SlotFill = IM_COL32(18, 24, 32, 215);
+		constexpr ImU32 SlotBorder = IM_COL32(70, 85, 100, 255);
+		constexpr ImU32 SlotHoverBorder = IM_COL32(215, 230, 245, 255);
+		constexpr ImU32 SlotSelectedBorder = IM_COL32(160, 190, 215, 255);
+		constexpr ImU32 SlotSelectedHighlight = IM_COL32(215, 230, 245, 255);
+		constexpr ImU32 SlotCaption = IM_COL32(145, 165, 185, 255);
+		constexpr ImVec4 HudText = ImVec4(0.84f, 0.90f, 0.96f, 1.0f);
+		constexpr ImVec4 HudMuted = ImVec4(0.57f, 0.65f, 0.73f, 1.0f);
+
+		ImU32 ToImColour(olc::Pixel colour, float alpha = 1.0f) {
+			return IM_COL32(colour.r, colour.g, colour.b,
+				static_cast<int>(alpha * 255.0f + 0.5f));
 		}
 	}
 
@@ -55,19 +64,14 @@ namespace Trauma {
 	}
 
 	bool Game::UpdatePlay(float fElapsedTime) {
-		if (keyboard.GetKey(olc::Key::ESCAPE).bPressed) {
-			LeavePlay();
-			return true;
-		}
-
 		const float deltaTime = std::min(fElapsedTime, MaxFrameTime);
+		Ui::BeginFrame(*this, deltaTime);
+
+		if (keyboard.GetKey(olc::Key::ESCAPE).bPressed)
+			paused = !paused;
+
 		UpdateClientInput(deltaTime);
 		client.Poll(deltaTime);
-
-		if (client.GetStatus() == Client::Status::Connected)
-			UpdateDrag();
-		else
-			dragging = false;
 
 		UpdateLocalRenderState();
 		UpdateRenderPosition();
@@ -77,8 +81,10 @@ namespace Trauma {
 		draw.SetWorldTransform(camera.GetWorldTransform());
 		DrawScene();
 		draw.WorldReset();
-		DrawHud();
-		return true;
+
+		BuildUi();
+		Ui::EndFrame(*this);
+		return !quitting;
 	}
 
 	void Game::LeavePlay() {
@@ -86,24 +92,28 @@ namespace Trauma {
 		fixedAccumulator = 0.0f;
 		localRenderReady = false;
 		jumpQueued = false;
-		dragging = false;
-		dragItem = Item::None;
+		paused = false;
+		drag = ItemDrag{};
 	}
 
 	void Game::UpdateClientInput(float deltaTime) {
-		if (keyboard.GetKey(olc::Key::R).bPressed && client.GetStatus() == Client::Status::Disconnected)
+		if (!paused && keyboard.GetKey(olc::Key::R).bPressed
+			&& client.GetStatus() == Client::Status::Disconnected)
 			client.Connect(host, port);
 
 		if (client.GetStatus() != Client::Status::Connected) {
 			fixedAccumulator = 0.0f;
 			jumpQueued = false;
+			drag = ItemDrag{};
 			return;
 		}
 
-		UpdateInventoryInput();
-		UpdateGrabMode();
+		if (!paused) {
+			UpdateInventoryInput();
+			UpdateGrabMode();
+		}
 
-		jumpQueued = jumpQueued || keyboard.GetKey(olc::Key::SPACE).bPressed;
+		jumpQueued = jumpQueued || (!paused && keyboard.GetKey(olc::Key::SPACE).bPressed);
 		fixedAccumulator += deltaTime;
 
 		int steps = 0;
@@ -138,8 +148,6 @@ namespace Trauma {
 	void Game::UpdateGrabMode() {
 		if (keyboard.GetKey(olc::Key::G).bPressed)
 			grabsEnabled = !grabsEnabled;
-		if (mouse.GetButton(0).bPressed && GrabToggleAt(mouse.GetPosition()))
-			grabsEnabled = !grabsEnabled;
 	}
 
 	void Game::UpdateLocalRenderState() {
@@ -157,12 +165,19 @@ namespace Trauma {
 
 	InputState Game::SampleInput(bool bJump) const {
 		InputState input;
+		if (paused) {
+			input.aim = { 1.0f, 0.0f };
+			return input;
+		}
+
 		input.jump = bJump;
 		input.run = keyboard.GetKey(olc::Key::SHIFT).bHeld;
 		input.crouch = keyboard.GetKey(olc::Key::CTRL).bHeld;
 		input.crawl = keyboard.GetKey(olc::Key::C).bHeld;
-		input.reachLeft = mouse.GetButton(0).bHeld;
-		input.reachRight = mouse.GetButton(1).bHeld;
+
+		const bool pointerOnUi = Ui::WantsMouse();
+		input.reachLeft = mouse.GetButton(0).bHeld && !pointerOnUi;
+		input.reachRight = mouse.GetButton(1).bHeld && !pointerOnUi;
 		input.grab = grabsEnabled;
 
 		const olc::vf2d mouseWorld = camera.GetWorldTransform().inverse(mouse.GetPosition());
@@ -315,92 +330,6 @@ namespace Trauma {
 		draw.FilledCircle(pose[Head] + olc::vf2d{ facing * 4.0f, -1.0f }, 1.5f, olc::Pixel(5, 10, 17));
 	}
 
-	void Game::DrawHud() {
-		if (client.GetStatus() != Client::Status::Connected)
-			return;
-
-		const Inventory& inventory = client.GetLocalRagdoll().inventory;
-		const olc::vf2d origin = HudOrigin();
-		DrawHotbar(origin, inventory);
-		DrawClothingSlots(origin + olc::vf2d(GroupWidth(HotbarSlots) + HotbarGroupSpacing, 0.0f), inventory);
-		DrawGrabToggle();
-
-		if (dragging && dragItem != Item::None)
-			DrawSlot(mouse.GetPosition() - olc::vf2d(HotbarSlotSize * 0.5f, HotbarSlotSize * 0.5f),
-				HotbarSlotSize, dragItem, true);
-	}
-
-	olc::vf2d Game::HudOrigin() {
-		const float hotbarWidth = GroupWidth(HotbarSlots);
-		const float clothingWidth = GroupWidth(static_cast<size_t>(ClothingSlot::Count));
-		const float hudWidth = hotbarWidth + HotbarGroupSpacing + clothingWidth
-			+ GrabToggleGap + GrabToggleWidth;
-		const olc::vi2d screen = ScreenSize();
-		return {
-			std::floor((static_cast<float>(screen.x) - hudWidth) * 0.5f),
-			static_cast<float>(screen.y) - HotbarSlotSize - HotbarBottomMargin
-		};
-	}
-
-	bool Game::SlotAt(const olc::vf2d& point, bool& clothing, size_t& index) {
-		struct Group {
-			olc::vf2d origin;
-			size_t slots;
-			bool clothing;
-		};
-
-		const olc::vf2d origin = HudOrigin();
-		const Group groups[] = {
-			{ origin, HotbarSlots, false },
-			{ origin + olc::vf2d(GroupWidth(HotbarSlots) + HotbarGroupSpacing, 0.0f),
-				static_cast<size_t>(ClothingSlot::Count), true }
-		};
-
-		for (const Group& group : groups) {
-			for (size_t i = 0; i < group.slots; ++i) {
-				const olc::vf2d slot = SlotOrigin(group.origin, i);
-				if (point.x >= slot.x && point.x < slot.x + HotbarSlotSize
-					&& point.y >= slot.y && point.y < slot.y + HotbarSlotSize) {
-					clothing = group.clothing;
-					index = i;
-					return true;
-				}
-			}
-		}
-		return false;
-	}
-
-	void Game::UpdateDrag() {
-		const olc::vf2d cursor = mouse.GetPosition();
-		if (mouse.GetButton(0).bPressed) {
-			bool clothing = false;
-			size_t index = 0;
-			if (SlotAt(cursor, clothing, index)) {
-				const Inventory& inventory = client.GetLocalRagdoll().inventory;
-				const Item item = clothing ? inventory.clothing[index] : inventory.hotbar[index];
-				if (item != Item::None) {
-					dragging = true;
-					dragFromClothing = clothing;
-					dragIndex = index;
-					dragItem = item;
-				}
-			}
-			return;
-		}
-
-		if (!dragging || mouse.GetButton(0).bHeld)
-			return;
-
-		dragging = false;
-		bool clothing = false;
-		size_t index = 0;
-		if (SlotAt(cursor, clothing, index))
-			client.MoveItem(dragFromClothing, dragIndex, clothing, index);
-		else
-			client.DropItem(dragFromClothing, dragIndex, camera.GetWorldTransform().inverse(cursor));
-		dragItem = Item::None;
-	}
-
 	void Game::DrawItem(Item item, const ObjectState& body) {
 		if (body.shape != Shape::Polygon || body.vertexCount < 3) {
 			draw.FilledCircle(body.position, body.radius, ItemColour(item));
@@ -416,62 +345,197 @@ namespace Trauma {
 			draw.FilledTriangle(vertices[0], vertices[i], vertices[i + 1], ItemColour(item));
 	}
 
-	void Game::DrawSlot(const olc::vf2d& origin, float size, Item item, bool highlighted) {
-		draw.FilledRect(origin, { size, size }, olc::Pixel(18, 24, 32));
-		if (item != Item::None)
-			draw.FilledRect(origin + olc::vf2d(4.0f, 4.0f), { size - 8.0f, size - 8.0f }, ItemColour(item));
-		if (highlighted)
-			draw.Rect(origin - olc::vf2d(2.0f, 2.0f), { size + 4.0f, size + 4.0f }, olc::Pixel(215, 230, 245));
-		draw.Rect(origin, { size, size }, highlighted ? olc::Pixel(160, 190, 215) : olc::Pixel(70, 85, 100));
+	void Game::BuildUi() {
+		dragDelivered = false;
+		BuildStatus();
+		if (client.GetStatus() == Client::Status::Connected)
+			BuildHud();
+		if (paused)
+			BuildPauseMenu();
 	}
 
-	void Game::DrawHotbar(const olc::vf2d& origin, const Inventory& inventory) {
-		for (size_t i = 0; i < HotbarSlots; ++i) {
-			const olc::vf2d slot = SlotOrigin(origin, i);
-			const Item shown = dragging && !dragFromClothing && dragIndex == i
-				? Item::None : inventory.hotbar[i];
-			DrawSlot(slot, HotbarSlotSize, shown, i == inventory.selected);
-			draw.StringProp(slot + olc::vf2d(3.0f, 2.0f), std::to_string((i + 1) % 10),
-				olc::Pixel(145, 165, 185));
+	void Game::BuildStatus() {
+		ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
+		ImGui::SetNextWindowBgAlpha(0.55f);
+		ImGui::Begin("##status", nullptr, OverlayFlags | ImGuiWindowFlags_AlwaysAutoResize);
+		switch (client.GetStatus()) {
+			case Client::Status::Connected:
+				ImGui::TextColored(ImVec4(0.59f, 0.78f, 0.86f, 1.0f), "connected");
+				break;
+			case Client::Status::Connecting:
+				ImGui::TextColored(ImVec4(0.92f, 0.80f, 0.43f, 1.0f), "connecting...");
+				break;
+			default:
+				ImGui::TextColored(ImVec4(0.75f, 0.55f, 0.55f, 1.0f), "disconnected");
+				ImGui::TextColored(HudMuted, "press R to connect");
+				break;
+		}
+		ImGui::TextColored(HudMuted, "%.0f fps", ImGui::GetIO().Framerate);
+		ImGui::End();
+	}
+
+	void Game::BuildHud() {
+		const Inventory& inventory = client.GetLocalRagdoll().inventory;
+		ImGuiIO& io = ImGui::GetIO();
+
+		ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - HotbarBottomMargin),
+			ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+		ImGui::SetNextWindowBgAlpha(0.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(HotbarSlotGap, HotbarSlotGap));
+		ImGui::Begin("##hud", nullptr,
+			OverlayFlags | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoBackground);
+
+		const Item held = inventory.hotbar[inventory.selected];
+		ImGui::TextColored(HudText, "%s", held == Item::None ? " " : ItemName(held));
+
+		for (size_t index = 0; index < HotbarSlots; ++index) {
+			if (index > 0)
+				ImGui::SameLine();
+			char id[16] = {};
+			char caption[4] = {};
+			std::snprintf(id, sizeof(id), "hotbar%zu", index);
+			std::snprintf(caption, sizeof(caption), "%zu", (index + 1) % 10);
+
+			const SlotResult result = BuildSlot(id, false, index, inventory.hotbar[index],
+				caption, index == inventory.selected);
+			if (result.clicked)
+				hotbarSelection = static_cast<uint8_t>(index);
+			if (result.dropped) {
+				client.MoveItem(result.payload.clothing, result.payload.index, false, index);
+				dragDelivered = true;
+			}
 		}
 
-		const Item selected = inventory.hotbar[inventory.selected];
-		if (selected != Item::None)
-			draw.StringProp(origin + olc::vf2d(0.0f, -16.0f), ItemName(selected), olc::Pixel(215, 230, 245));
-	}
+		ImGui::SameLine(0.0f, HotbarGroupSpacing);
+		for (size_t index = 0; index < inventory.clothing.size(); ++index) {
+			if (index > 0)
+				ImGui::SameLine();
+			char id[16] = {};
+			std::snprintf(id, sizeof(id), "clothing%zu", index);
 
-	void Game::DrawClothingSlots(const olc::vf2d& origin, const Inventory& inventory) {
-		for (size_t i = 0; i < inventory.clothing.size(); ++i) {
-			const olc::vf2d slot = SlotOrigin(origin, i);
-			const Item shown = dragging && dragFromClothing && dragIndex == i
-				? Item::None : inventory.clothing[i];
-			DrawSlot(slot, HotbarSlotSize, shown, false);
-			draw.StringProp(slot + olc::vf2d(3.0f, -16.0f), ClothingName(static_cast<ClothingSlot>(i)),
-				olc::Pixel(145, 165, 185));
+			const SlotResult result = BuildSlot(id, true, index, inventory.clothing[index],
+				ClothingName(static_cast<ClothingSlot>(index)), false);
+			if (result.dropped) {
+				client.MoveItem(result.payload.clothing, result.payload.index, true, index);
+				dragDelivered = true;
+			}
 		}
+
+		ImGui::SameLine(0.0f, HotbarGroupSpacing);
+		if (ImGui::Button(grabsEnabled ? "GRAB\nON" : "GRAB\nOFF", ImVec2(GrabToggleWidth, HotbarSlotSize)))
+			grabsEnabled = !grabsEnabled;
+
+		ImGui::End();
+		ImGui::PopStyleVar(3);
+
+		ResolveItemDrag();
 	}
 
-	olc::vf2d Game::GrabToggleOrigin() {
-		const float x = GroupWidth(HotbarSlots) + HotbarGroupSpacing
-			+ GroupWidth(static_cast<size_t>(ClothingSlot::Count)) + GrabToggleGap;
-		return HudOrigin() + olc::vf2d(x, 0.0f);
+	Game::SlotResult Game::BuildSlot(const char* id, bool clothing, size_t index, Item item,
+		const char* caption, bool selected) {
+		SlotResult result;
+		ImGui::PushID(id);
+
+		const ImVec2 origin = ImGui::GetCursorScreenPos();
+		const ImVec2 extent(HotbarSlotSize, HotbarSlotSize);
+		ImGui::InvisibleButton("##slot", extent);
+		const bool hovered = ImGui::IsItemHovered();
+		result.clicked = ImGui::IsItemClicked();
+
+		if (item != Item::None) {
+			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
+				ItemDrag payload;
+				payload.active = true;
+				payload.clothing = clothing;
+				payload.index = index;
+				payload.item = item;
+				ImGui::SetDragDropPayload(ItemPayload, &payload, sizeof(payload));
+				drag = payload;
+				ImGui::EndDragDropSource();
+			}
+		}
+
+		if (ImGui::BeginDragDropTarget()) {
+			if (const ImGuiPayload* accepted = ImGui::AcceptDragDropPayload(ItemPayload)) {
+				result.dropped = true;
+				result.payload = *static_cast<const ItemDrag*>(accepted->Data);
+			}
+			ImGui::EndDragDropTarget();
+		}
+
+		ImDrawList* list = ImGui::GetWindowDrawList();
+		const ImVec2 corner = origin + extent;
+		list->AddRectFilled(origin, corner, SlotFill);
+		if (item != Item::None) {
+			list->AddRectFilled(origin + ImVec2(4.0f, 4.0f), corner - ImVec2(4.0f, 4.0f),
+				ToImColour(ItemColour(item)));
+		}
+		if (selected)
+			list->AddRect(origin - ImVec2(2.0f, 2.0f), corner + ImVec2(2.0f, 2.0f), SlotSelectedHighlight);
+		list->AddRect(origin, corner,
+			hovered ? SlotHoverBorder : (selected ? SlotSelectedBorder : SlotBorder));
+		list->PushClipRect(origin, corner, true);
+		list->AddText(ImGui::GetFont(), SlotCaptionFontSize, origin + ImVec2(3.0f, 1.0f), SlotCaption, caption);
+		list->PopClipRect();
+
+		if (hovered && item != Item::None)
+			ImGui::SetTooltip("%s", ItemName(item));
+
+		ImGui::PopID();
+		return result;
 	}
 
-	bool Game::GrabToggleAt(const olc::vf2d& point) {
-		const olc::vf2d origin = GrabToggleOrigin();
-		return point.x >= origin.x && point.x < origin.x + GrabToggleWidth
-			&& point.y >= origin.y && point.y < origin.y + HotbarSlotSize;
+	void Game::ResolveItemDrag() {
+		if (!drag.active)
+			return;
+
+		ImGuiIO& io = ImGui::GetIO();
+		ImDrawList* foreground = ImGui::GetForegroundDrawList();
+		const ImVec2 half(HotbarSlotSize * 0.5f, HotbarSlotSize * 0.5f);
+		foreground->AddRectFilled(io.MousePos - half, io.MousePos + half, SlotFill);
+		foreground->AddRectFilled(io.MousePos - half + ImVec2(4.0f, 4.0f),
+			io.MousePos + half - ImVec2(4.0f, 4.0f), ToImColour(ItemColour(drag.item)));
+		foreground->AddRect(io.MousePos - half, io.MousePos + half, SlotHoverBorder);
+
+		if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+			return;
+
+		if (!dragDelivered) {
+			const olc::vf2d world = camera.GetWorldTransform().inverse(
+				olc::vf2d(io.MousePos.x, io.MousePos.y));
+			client.DropItem(drag.clothing, drag.index, world);
+		}
+		drag = ItemDrag{};
 	}
 
-	void Game::DrawGrabToggle() {
-		const olc::vf2d origin = GrabToggleOrigin();
-		const bool hovered = GrabToggleAt(mouse.GetPosition());
-		draw.FilledRect(origin, { GrabToggleWidth, HotbarSlotSize },
-			grabsEnabled ? olc::Pixel(32, 74, 92) : olc::Pixel(24, 32, 42));
-		draw.Rect(origin, { GrabToggleWidth, HotbarSlotSize },
-			hovered ? olc::Pixel(215, 230, 245) : olc::Pixel(70, 85, 100));
-		draw.StringProp(origin + olc::vf2d(8.0f, 8.0f), "GRAB", olc::Pixel(215, 230, 245));
-		draw.StringProp(origin + olc::vf2d(8.0f, 24.0f), grabsEnabled ? "ON" : "OFF",
-			grabsEnabled ? olc::Pixel(150, 200, 220) : olc::Pixel(190, 140, 140));
+	void Game::BuildPauseMenu() {
+		ImGuiIO& io = ImGui::GetIO();
+
+		ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+		ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.04f, 0.07f, 0.55f));
+		ImGui::Begin("##dim", nullptr, OverlayFlags);
+		ImGui::End();
+		ImGui::PopStyleColor();
+
+		ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+			ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+		ImGui::Begin("Paused", nullptr,
+			ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove
+			| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
+
+		const ImVec2 buttonSize(200.0f, 0.0f);
+		if (ImGui::Button("Resume", buttonSize))
+			paused = false;
+		if (ImGui::Button("Disconnect", buttonSize))
+			LeavePlay();
+		if (ImGui::Button("Quit", buttonSize)) {
+			LeavePlay();
+			quitting = true;
+		}
+
+		ImGui::End();
 	}
 }

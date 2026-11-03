@@ -14,6 +14,19 @@ namespace Trauma {
 		bool OnUserUpdate(float fElapsedTime) override;
 
 	private:
+		struct ItemDrag {
+			bool active = false;
+			bool clothing = false;
+			size_t index = 0;
+			Item item = Item::None;
+		};
+
+		struct SlotResult {
+			bool clicked = false;
+			bool dropped = false;
+			ItemDrag payload;
+		};
+
 		bool UpdatePlay(float fElapsedTime);
 		void LeavePlay();
 		void UpdateClientInput(float deltaTime);
@@ -22,7 +35,6 @@ namespace Trauma {
 		InputState SampleInput(bool bJump) const;
 		void UpdateLocalRenderState();
 		void UpdateRenderPosition();
-		void UpdateDrag();
 
 		void UpdateCamera(float fElapsedTime);
 		void ResetCamera();
@@ -36,15 +48,13 @@ namespace Trauma {
 		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
 		void DrawItem(Item item, const ObjectState& body);
 
-		void DrawHud();
-		void DrawHotbar(const olc::vf2d& origin, const Inventory& inventory);
-		void DrawClothingSlots(const olc::vf2d& origin, const Inventory& inventory);
-		void DrawGrabToggle();
-		olc::vf2d GrabToggleOrigin();
-		bool GrabToggleAt(const olc::vf2d& point);
-		void DrawSlot(const olc::vf2d& origin, float size, Item item, bool highlighted);
-		olc::vf2d HudOrigin();
-		bool SlotAt(const olc::vf2d& point, bool& clothing, size_t& index);
+		void BuildUi();
+		void BuildStatus();
+		void BuildHud();
+		void BuildPauseMenu();
+		SlotResult BuildSlot(const char* id, bool clothing, size_t index, Item item,
+			const char* caption, bool selected);
+		void ResolveItemDrag();
 
 	private:
 		std::string host;
@@ -65,10 +75,11 @@ namespace Trauma {
 		bool cameraInitialised = false;
 
 		bool grabsEnabled = true;
+		bool paused = false;
+		bool quitting = false;
 		uint8_t hotbarSelection = 0;
-		bool dragging = false;
-		bool dragFromClothing = false;
-		size_t dragIndex = 0;
-		Item dragItem = Item::None;
+
+		ItemDrag drag;
+		bool dragDelivered = false;
 	};
 }

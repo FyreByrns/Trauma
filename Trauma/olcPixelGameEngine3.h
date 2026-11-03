@@ -19646,9 +19646,9 @@ const TextureBatch& olc::Draw::TexturedPolygon(olc::TextureBatch& batch, const o
 	case olc::Structure::List:
 	{
 		size_t idx = batch.task.vertexBuffer.size();
-		batch.task.vertexBuffer.resize(batch.task.vertexBuffer.size() + (vecPoints.size() / 3));
+		batch.task.vertexBuffer.resize(batch.task.vertexBuffer.size() + (vecPoints.size() / 3) * 3);
 
-		for (size_t i = 0; i < vecPoints.size(); i += 3)
+		for (size_t i = 0; i + 2 < vecPoints.size(); i += 3)
 			pushTriangle(idx + i,
 				buffPoints.data[i], buffPoints.data[i + 1], buffPoints.data[i + 2],
 				buffColours.data[i], buffColours.data[i + 1], buffColours.data[i + 2], 

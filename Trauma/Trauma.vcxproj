@@ -134,6 +134,11 @@
     <ClCompile Include="Network.cpp" />
     <ClCompile Include="Json.cpp" />
     <ClCompile Include="IK.cpp" />
+    <ClCompile Include="Ui.cpp" />
+    <ClCompile Include="third_party\imgui\imgui.cpp" />
+    <ClCompile Include="third_party\imgui\imgui_draw.cpp" />
+    <ClCompile Include="third_party\imgui\imgui_tables.cpp" />
+    <ClCompile Include="third_party\imgui\imgui_widgets.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Game.h" />
@@ -149,6 +154,8 @@
     <ClInclude Include="Simulation.h" />
     <ClInclude Include="Json.h" />
     <ClInclude Include="IK.h" />
+    <ClInclude Include="Ui.h" />
+    <ClInclude Include="third_party\imgui\imgui.h" />
     <ClInclude Include="olcPixelGameEngine3.h" />
     <ClInclude Include="olcUTIL3_Camera2D.h" />
     <ClInclude Include="olcUTIL3_Geometry2D.h" />
