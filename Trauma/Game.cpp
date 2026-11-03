@@ -69,8 +69,10 @@ namespace Trauma {
 		const float deltaTime = std::min(fElapsedTime, MaxFrameTime);
 		Ui::BeginFrame(*this, deltaTime);
 
-		if (keyboard.GetKey(olc::Key::ESCAPE).bPressed)
+		if (keyboard.GetKey(olc::Key::ESCAPE).bPressed) {
 			paused = !paused;
+			dropMode = false;
+		}
 
 		UpdateClientInput(deltaTime);
 		client.Poll(deltaTime);
@@ -99,6 +101,7 @@ namespace Trauma {
 		jumpQueued = false;
 		paused = false;
 		drag = ItemDrag{};
+		dropMode = false;
 	}
 
 	void Game::UpdateClientInput(float deltaTime) {
@@ -110,12 +113,14 @@ namespace Trauma {
 			fixedAccumulator = 0.0f;
 			jumpQueued = false;
 			drag = ItemDrag{};
+			dropMode = false;
 			return;
 		}
 
 		if (!paused) {
 			UpdateInventoryInput();
 			UpdateGrabMode();
+			UpdateDropMode();
 		}
 
 		jumpQueued = jumpQueued || (!paused && keyboard.GetKey(olc::Key::SPACE).bPressed);
@@ -155,9 +160,32 @@ namespace Trauma {
 			grabsEnabled = !grabsEnabled;
 	}
 
+	void Game::UpdateDropMode() {
+		if (keyboard.GetKey(olc::Key::Q).bPressed) {
+			const bool hasItem = client.GetLocalRagdoll().inventory.hotbar[hotbarSelection] != Item::None;
+			dropMode = !dropMode && hasItem;
+		}
+
+		if (!dropMode)
+			return;
+
+		if (client.GetLocalRagdoll().inventory.hotbar[hotbarSelection] == Item::None) {
+			dropMode = false;
+			return;
+		}
+
+		if (dropPreview.active && !Ui::WantsMouse() && mouse.GetButton(0).bPressed) {
+			client.DropItem(false, hotbarSelection, dropPreview.position);
+			dropMode = false;
+		}
+	}
+
 	void Game::UpdateDropPreview() {
 		dropPreview = DropPreview{};
-		if (!drag.active || drag.item == Item::None)
+		const Item item = drag.active
+			? drag.item
+			: client.GetLocalRagdoll().inventory.hotbar[hotbarSelection];
+		if ((!drag.active && !dropMode) || item == Item::None)
 			return;
 
 		const olc::vf2d pointer = mouse.GetPosition();
@@ -166,7 +194,7 @@ namespace Trauma {
 			return;
 
 		const olc::vf2d target = camera.GetWorldTransform().inverse(pointer);
-		const ObjectState ghost = CreateItemBody(drag.item, target);
+		const ObjectState ghost = CreateItemBody(item, target);
 		if (ghost.radius <= 0.0f)
 			return;
 
@@ -196,7 +224,7 @@ namespace Trauma {
 			offset *= DropOffset / distance;
 
 		dropPreview.active = true;
-		dropPreview.item = drag.item;
+		dropPreview.item = item;
 		dropPreview.position = ClampDropPosition(hand, hand + offset, ghost.radius,
 			obstacles.data(), obstacleCount);
 	}
@@ -235,7 +263,7 @@ namespace Trauma {
 		const olc::vf2d aim = mouseWorld - client.GetLocalRagdoll().parts[Torso].position;
 		input.aim = { std::clamp(aim.x, -2000.0f, 2000.0f), std::clamp(aim.y, -2000.0f, 2000.0f) };
 
-		if (drag.active && dropPreview.active) {
+		if ((drag.active || dropMode) && dropPreview.active) {
 			input.reachLeft = false;
 			input.reachRight = true;
 			input.grab = false;
@@ -434,10 +462,33 @@ namespace Trauma {
 	void Game::BuildUi() {
 		dragDelivered = false;
 		BuildStatus();
-		if (client.GetStatus() == Client::Status::Connected)
+		if (client.GetStatus() == Client::Status::Connected) {
 			BuildHud();
+			BuildPickupLabel();
+			if (dropMode && client.GetLocalRagdoll().inventory.hotbar[hotbarSelection] != Item::None)
+				DrawItemGhost(client.GetLocalRagdoll().inventory.hotbar[hotbarSelection]);
+		}
 		if (paused)
 			BuildPauseMenu();
+	}
+
+	void Game::BuildPickupLabel() {
+		size_t index = 0;
+		if (!client.GetPickupCandidate(index))
+			return;
+
+		const Client::WorldItem& item = client.GetWorldItems()[index];
+		if (item.item == Item::None)
+			return;
+
+		const olc::vf2d screen = camera.GetWorldTransform().forwardRound(
+			item.body.position - olc::vf2d{ 0.0f, item.body.radius + 10.0f });
+		const char* name = ItemName(item.item);
+		const ImVec2 size = ImGui::CalcTextSize(name);
+		const ImVec2 position(screen.x - size.x * 0.5f, screen.y - size.y);
+		ImDrawList* foreground = ImGui::GetForegroundDrawList();
+		foreground->AddText(ImVec2(position.x + 1.0f, position.y + 1.0f), IM_COL32(5, 10, 17, 220), name);
+		foreground->AddText(position, SlotCaption, name);
 	}
 
 	void Game::BuildStatus() {
@@ -488,8 +539,12 @@ namespace Trauma {
 
 			const SlotResult result = BuildSlot(id, false, index, inventory.hotbar[index],
 				caption, index == inventory.selected);
-			if (result.clicked)
+			if (result.clicked) {
+				if (dropMode)
+					client.MoveItem(false, hotbarSelection, false, index);
 				hotbarSelection = static_cast<uint8_t>(index);
+				dropMode = false;
+			}
 			if (result.dropped) {
 				client.MoveItem(result.payload.clothing, result.payload.index, false, index);
 				dragDelivered = true;
@@ -575,17 +630,21 @@ namespace Trauma {
 		return result;
 	}
 
+	void Game::DrawItemGhost(Item item) {
+		ImDrawList* foreground = ImGui::GetForegroundDrawList();
+		const ImVec2 pointer = ImGui::GetIO().MousePos;
+		const ImVec2 half(HotbarSlotSize * 0.5f, HotbarSlotSize * 0.5f);
+		foreground->AddRectFilled(pointer - half, pointer + half, SlotFill);
+		foreground->AddRectFilled(pointer - half + ImVec2(4.0f, 4.0f),
+			pointer + half - ImVec2(4.0f, 4.0f), ToImColour(ItemColour(item)));
+		foreground->AddRect(pointer - half, pointer + half, SlotHoverBorder);
+	}
+
 	void Game::ResolveItemDrag() {
 		if (!drag.active)
 			return;
 
-		ImGuiIO& io = ImGui::GetIO();
-		ImDrawList* foreground = ImGui::GetForegroundDrawList();
-		const ImVec2 half(HotbarSlotSize * 0.5f, HotbarSlotSize * 0.5f);
-		foreground->AddRectFilled(io.MousePos - half, io.MousePos + half, SlotFill);
-		foreground->AddRectFilled(io.MousePos - half + ImVec2(4.0f, 4.0f),
-			io.MousePos + half - ImVec2(4.0f, 4.0f), ToImColour(ItemColour(drag.item)));
-		foreground->AddRect(io.MousePos - half, io.MousePos + half, SlotHoverBorder);
+		DrawItemGhost(drag.item);
 
 		if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left))
 			return;

@@ -38,6 +38,7 @@ namespace Trauma {
 		void UpdateClientInput(float deltaTime);
 		void UpdateInventoryInput();
 		void UpdateGrabMode();
+		void UpdateDropMode();
 		void UpdateDropPreview();
 		InputState SampleInput(bool bJump) const;
 		void UpdateLocalRenderState();
@@ -55,10 +56,12 @@ namespace Trauma {
 		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
 		void DrawItem(Item item, const ObjectState& body);
 		void DrawDropPreview();
+		void DrawItemGhost(Item item);
 
 		void BuildUi();
 		void BuildStatus();
 		void BuildHud();
+		void BuildPickupLabel();
 		void BuildPauseMenu();
 		SlotResult BuildSlot(const char* id, bool clothing, size_t index, Item item,
 			const char* caption, bool selected);
@@ -89,6 +92,7 @@ namespace Trauma {
 
 		ItemDrag drag;
 		bool dragDelivered = false;
+		bool dropMode = false;
 		olc::vf2d hudMin;
 		olc::vf2d hudMax;
 		DropPreview dropPreview;
