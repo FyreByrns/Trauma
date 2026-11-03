@@ -63,6 +63,7 @@ int main(int argc, char** argv) {
 	}
 
 	if (!valid) {
+		std::cout << "improper usage or malformed arguments:" << std::endl;
 		std::cout << "usage: Trauma [--server | --connect HOST] [--port PORT]" << std::endl;
 		return 1;
 	}
