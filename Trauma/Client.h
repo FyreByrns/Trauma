@@ -45,7 +45,6 @@ namespace Trauma {
 		void Poll(float fElapsedTime);
 
 		Status GetStatus() const;
-		uint8_t GetPlayerId() const;
 		const RagdollState& GetLocalRagdoll() const;
 		std::array<olc::vf2d, PartCount> GetLocalPose(float alpha) const;
 		bool GetRemotePose(uint8_t id, float alpha, std::array<olc::vf2d, PartCount>& pose, float& facing) const;
@@ -53,7 +52,7 @@ namespace Trauma {
 		const std::array<WorldItem, MaxWorldItems>& GetWorldItems() const;
 		void MoveItem(bool fromClothing, size_t from, bool toClothing, size_t to);
 		void DropItem(bool fromClothing, size_t index, const olc::vf2d& position);
-		bool GetGrippedItem(size_t& index) const;
+		bool GetPickupCandidate(size_t& index) const;
 		void PickupItem(size_t index);
 		bool GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const;
 
@@ -84,12 +83,15 @@ namespace Trauma {
 			float previousAngle = 0.0f;
 		};
 
+		// Drops every piece of per-connection state.
+		void ResetSession();
 		void SendHello();
 		void SendPacket(const Net::PacketWriter& packet) const;
 		void PollPackets();
 		void HandlePacket(Net::PacketReader& reader);
 		void HandleWelcome(Net::PacketReader& reader);
 		void HandleSnapshot(Net::PacketReader& reader);
+		void ApplySnapshot(uint32_t serverTick, uint8_t count);
 		void Reconcile(const RagdollState& authoritative, uint32_t lastInput);
 		void StepPrediction(const InputState& input);
 		void SmoothRemoteObjects(float fElapsedTime);

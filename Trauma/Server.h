@@ -8,13 +8,11 @@
 #include <cstdint>
 #include <deque>
 #include <thread>
+#include <vector>
 
-namespace Trauma
-{
-	class Server
-	{
+namespace Trauma {
+	class Server {
 	public:
-
 		Server() = default;
 		~Server();
 		Server(const Server&) = delete;
@@ -26,14 +24,12 @@ namespace Trauma
 		uint16_t GetPort() const;
 
 	private:
-		struct QueuedInput
-		{
+		struct QueuedInput {
 			uint32_t sequence = 0;
 			InputState input;
 		};
 
-		struct ClientSlot
-		{
+		struct ClientSlot {
 			bool bActive = false;
 			Net::Endpoint endpoint;
 			uint8_t id = 0;
@@ -49,13 +45,18 @@ namespace Trauma
 		void Loop();
 		void PollPackets();
 		void StepSimulation();
+		InputState SelectInput(ClientSlot& client);
 		void BroadcastSnapshot();
+		void SendSnapshotTo(const std::vector<ClientSlot*>& recipients, const Net::PacketWriter& packet);
 		void DropTimedOutClients();
 		ClientSlot* FindClient(const Net::Endpoint& endpoint);
 		ClientSlot* AllocateClient(const Net::Endpoint& endpoint);
 		void HandleHello(const Net::Endpoint& endpoint, Net::PacketReader& reader);
 		void HandleInput(const Net::Endpoint& endpoint, Net::PacketReader& reader);
 		void HandleInventory(const Net::Endpoint& endpoint, Net::PacketReader& reader);
+		bool HandleInventoryMove(ClientSlot& client, Net::PacketReader& reader);
+		bool HandleInventoryDrop(ClientSlot& client, Net::PacketReader& reader);
+		bool HandleInventoryPickup(ClientSlot& client, Net::PacketReader& reader);
 		void SendWelcome(const ClientSlot& client);
 
 	private:

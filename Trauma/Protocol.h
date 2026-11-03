@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 14;
+	constexpr uint32_t ProtocolVersion = 15;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -166,7 +166,7 @@ namespace Trauma::Net {
 		packet.Write(static_cast<uint8_t>(input.jump ? 1 : 0));
 		packet.Write(static_cast<uint8_t>((input.reachLeft ? 1 : 0) | (input.reachRight ? 2 : 0)
 			| (input.run ? 4 : 0) | (input.crouch ? 8 : 0) | (input.crawl ? 16 : 0)
-			| (input.climb < 0.0f ? 32 : 0) | (input.climb > 0.0f ? 64 : 0)));
+			| (input.climb < 0.0f ? 32 : 0) | (input.climb > 0.0f ? 64 : 0) | (input.grab ? 128 : 0)));
 		packet.Write(input.aim.x);
 		packet.Write(input.aim.y);
 		packet.Write(input.hotbar);
@@ -186,6 +186,7 @@ namespace Trauma::Net {
 		input.crouch = (reach & 8) != 0;
 		input.crawl = (reach & 16) != 0;
 		input.climb = ((reach & 64) ? 1.0f : 0.0f) - ((reach & 32) ? 1.0f : 0.0f);
+		input.grab = (reach & 128) != 0;
 		return true;
 	}
 

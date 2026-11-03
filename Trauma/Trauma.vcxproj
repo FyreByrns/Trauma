@@ -141,6 +141,11 @@
     <ClInclude Include="Client.h" />
     <ClInclude Include="Network.h" />
     <ClInclude Include="Protocol.h" />
+    <ClInclude Include="Input.h" />
+    <ClInclude Include="Physics.h" />
+    <ClInclude Include="World.h" />
+    <ClInclude Include="Items.h" />
+    <ClInclude Include="Ragdoll.h" />
     <ClInclude Include="Simulation.h" />
     <ClInclude Include="Json.h" />
     <ClInclude Include="IK.h" />

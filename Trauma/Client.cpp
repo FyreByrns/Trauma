@@ -23,19 +23,10 @@ namespace Trauma {
 			return false;
 		}
 
+		ResetSession();
 		status = Status::Connecting;
-		playerId = 0;
-		predicted = RagdollState{};
 		connectingTime = 0.0f;
 		helloCooldown = 0.0f;
-		pending.clear();
-		predictedBodies.clear();
-		predictedRagdolls.clear();
-		players.clear();
-		worldItems = {};
-		assemblingTick = 0;
-		assemblingCount = 0;
-		nextInputSequence = 1;
 
 		std::cout << "[client] connecting to " << host << ":" << port << std::endl;
 		SendHello();
@@ -49,14 +40,21 @@ namespace Trauma {
 
 		status = Status::Disconnected;
 		socket.Close();
-		pending.clear();
-		predictedBodies.clear();
+		ResetSession();
+	}
+
+	void Client::ResetSession() {
+		playerId = 0;
+		predicted = RagdollState{};
+		previousLocal = {};
 		predictedRagdolls.clear();
+		predictedBodies.clear();
 		players.clear();
 		worldItems = {};
+		pending.clear();
 		assemblingTick = 0;
 		assemblingCount = 0;
-		playerId = 0;
+		nextInputSequence = 1;
 		snapshotTimer = 0.0f;
 		latestServerTick = 0;
 	}
@@ -85,11 +83,11 @@ namespace Trauma {
 		for (PredictedRagdoll& ragdoll : predictedRagdolls)
 			for (size_t i = 0; i < PartCount; ++i)
 				ragdoll.previous[i] = ragdoll.state.parts[i].position;
-		for (PredictedBody& body : predictedBodies)
-		{
+		for (PredictedBody& body : predictedBodies) {
 			body.previousPosition = body.state.position;
 			body.previousAngle = body.state.angle;
 		}
+
 		StepPrediction(input);
 		predicted.parts[Torso].lastInput = sent.sequence;
 
@@ -136,10 +134,6 @@ namespace Trauma {
 
 	Client::Status Client::GetStatus() const {
 		return status;
-	}
-
-	uint8_t Client::GetPlayerId() const {
-		return playerId;
 	}
 
 	const RagdollState& Client::GetLocalRagdoll() const {
@@ -192,7 +186,7 @@ namespace Trauma {
 		TakeInventoryItem(predicted.inventory, fromClothing, index);
 	}
 
-	bool Client::GetGrippedItem(size_t& index) const {
+	bool Client::GetPickupCandidate(size_t& index) const {
 		const uint8_t base = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount);
 		for (const HandGrip& grip : predicted.grips) {
 			if (grip.target <= base)
@@ -203,6 +197,12 @@ namespace Trauma {
 			index = candidate;
 			return true;
 		}
+		for (size_t slot = 0; slot < worldItems.size(); ++slot)
+			if (worldItems[slot].item != Item::None
+				&& HandsOnItem(predicted, worldItems[slot].body)) {
+				index = slot;
+				return true;
+			}
 		return false;
 	}
 
@@ -211,29 +211,33 @@ namespace Trauma {
 			return;
 		if (worldItems[index].item == Item::None)
 			return;
+
 		Net::PacketWriter packet(Net::MessageType::Inventory);
 		Net::WriteInventoryPickup(packet, static_cast<uint8_t>(index));
 		SendPacket(packet);
+
 		for (Item& slot : predicted.inventory.hotbar)
 			if (slot == Item::None) {
 				slot = worldItems[index].item;
 				break;
 			}
+
 		const uint8_t target = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + index + 1);
 		for (HandGrip& grip : predicted.grips)
 			if (grip.target == target)
 				grip = {};
+
 		worldItems[index] = WorldItem{};
 	}
 
 	bool Client::GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const {
 		const float blend = std::clamp(alpha, 0.0f, 1.0f);
 		for (const PredictedBody& body : predictedBodies) {
-			if (body.id == id) {
-				position = body.previousPosition.lerp(body.state.position, blend);
-				angle = body.previousAngle + std::remainder(body.state.angle - body.previousAngle, 6.2831853f) * blend;
-				return true;
-			}
+			if (body.id != id)
+				continue;
+			position = body.previousPosition.lerp(body.state.position, blend);
+			angle = body.previousAngle + std::remainder(body.state.angle - body.previousAngle, TwoPi) * blend;
+			return true;
 		}
 		return false;
 	}
@@ -296,20 +300,11 @@ namespace Trauma {
 		if (status == Status::Connected && playerId == id)
 			return;
 
+		ResetSession();
 		playerId = id;
 		predicted = welcome;
 		for (size_t i = 0; i < PartCount; ++i)
 			previousLocal[i] = predicted.parts[i].position;
-		pending.clear();
-		predictedBodies.clear();
-		predictedRagdolls.clear();
-		players.clear();
-		worldItems = {};
-		assemblingTick = 0;
-		assemblingCount = 0;
-		nextInputSequence = 1;
-		snapshotTimer = 0.0f;
-		latestServerTick = 0;
 		status = Status::Connected;
 
 		std::cout << "[client] connected as player " << static_cast<int>(playerId) << std::endl;
@@ -317,7 +312,8 @@ namespace Trauma {
 
 	void Client::HandleSnapshot(Net::PacketReader& reader) {
 		uint32_t serverTick = 0;
-		uint8_t index = 0, count = 0;
+		uint8_t index = 0;
+		uint8_t count = 0;
 		if (!reader.Read(serverTick) || !reader.Read(index) || !reader.Read(count)
 			|| count < 2 || count > MaxPlayers + 1 || index >= count
 			|| serverTick <= latestServerTick || serverTick < assemblingTick)
@@ -330,9 +326,11 @@ namespace Trauma {
 				if (!Net::ReadObjectState(reader, id, chunk.objects[i]) || id != MaxPlayers + i + 1)
 					return;
 			}
+
 			uint8_t itemCount = 0;
 			if (!reader.Read(itemCount) || itemCount != MaxWorldItems)
 				return;
+
 			for (size_t i = 0; i < MaxWorldItems; ++i) {
 				uint8_t kind = 0;
 				olc::vf2d position;
@@ -364,28 +362,36 @@ namespace Trauma {
 		}
 		if (count != assemblingCount)
 			return;
+
 		chunk.received = true;
 		snapshotChunks[index] = chunk;
 		for (size_t i = 0; i < count; ++i)
 			if (!snapshotChunks[i].received)
 				return;
 
+		ApplySnapshot(serverTick, count);
+	}
+
+	void Client::ApplySnapshot(uint32_t serverTick, uint8_t count) {
 		bool sawLocal = false;
 		RagdollState authoritative;
 		std::vector<PredictedRagdoll> receivedRagdolls;
 		std::vector<PredictedBody> receivedBodies;
 		std::vector<ObjectView> received;
+
 		uint8_t previousId = 0;
 		for (size_t i = 0; i + 1 < count; ++i) {
 			const SnapshotChunk& part = snapshotChunks[i];
 			if (part.id <= previousId)
 				return;
 			previousId = part.id;
+
 			if (part.id == playerId) {
 				authoritative = part.ragdoll;
 				sawLocal = true;
 				continue;
 			}
+
 			PredictedRagdoll other;
 			other.id = part.id;
 			other.state = part.ragdoll;
@@ -395,19 +401,22 @@ namespace Trauma {
 				if (existing.id == other.id)
 					other.previous = existing.previous;
 			receivedRagdolls.push_back(other);
+
 			ObjectView view;
 			view.id = part.id;
 			view.position = view.target = part.ragdoll.parts[Torso].position;
 			received.push_back(view);
 		}
+
 		if (!sawLocal) {
 			Disconnect();
 			return;
 		}
+
 		for (size_t i = 0; i < TestBodyCount; ++i) {
 			const uint8_t id = static_cast<uint8_t>(MaxPlayers + i + 1);
 			const ObjectState& incoming = snapshotChunks[count - 1].objects[i];
-			PredictedBody body{id, incoming, incoming.position};
+			PredictedBody body{ id, incoming, incoming.position };
 			body.previousAngle = incoming.angle;
 			for (const PredictedBody& existing : predictedBodies)
 				if (existing.id == id) {
@@ -415,6 +424,7 @@ namespace Trauma {
 					body.previousAngle = existing.previousAngle;
 				}
 			receivedBodies.push_back(body);
+
 			ObjectView view;
 			view.id = id;
 			view.position = view.target = incoming.position;
@@ -446,6 +456,7 @@ namespace Trauma {
 
 	void Client::StepPrediction(const InputState& input) {
 		ApplyRagdollInput(predicted, input);
+
 		std::vector<RagdollState*> ragdolls;
 		std::vector<ObjectState*> bodies;
 		bool addedLocal = false;
@@ -465,6 +476,7 @@ namespace Trauma {
 			bodies.push_back(&body.state);
 		for (WorldItem& item : worldItems)
 			bodies.push_back(&item.body);
+
 		StepPhysics(ragdolls, bodies, FixedDeltaTime);
 	}
 

@@ -14,38 +14,41 @@ namespace Trauma {
 		bool OnUserUpdate(float fElapsedTime) override;
 
 	private:
-		enum class Scene {
-			Menu,
-			Play,
-			Editor
-		};
-
 		bool UpdatePlay(float fElapsedTime);
-		void StartPlay();
-
+		void LeavePlay();
+		void UpdateClientInput(float deltaTime);
+		void UpdateInventoryInput();
+		void UpdateGrabMode();
 		InputState SampleInput(bool bJump) const;
+		void UpdateLocalRenderState();
 		void UpdateRenderPosition();
+		void UpdateDrag();
+
 		void UpdateCamera(float fElapsedTime);
 		void ResetCamera();
+		void ApplyCameraSettings();
 		void SetCameraZoom(float zoom);
+
 		void DrawScene();
 		void DrawObjects();
 		void DrawObject(const Client::ObjectView& object, const olc::vf2d& position,
 			float angle, olc::Pixel colour);
 		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
+		void DrawItem(Item item, const ObjectState& body);
+
 		void DrawHud();
 		void DrawHotbar(const olc::vf2d& origin, const Inventory& inventory);
 		void DrawClothingSlots(const olc::vf2d& origin, const Inventory& inventory);
+		void DrawGrabToggle();
+		olc::vf2d GrabToggleOrigin();
+		bool GrabToggleAt(const olc::vf2d& point);
 		void DrawSlot(const olc::vf2d& origin, float size, Item item, bool highlighted);
-		void DrawItem(Item item, const ObjectState& body);
-		void UpdateDrag();
 		olc::vf2d HudOrigin();
 		bool SlotAt(const olc::vf2d& point, bool& clothing, size_t& index);
 
 	private:
 		std::string host;
 		uint16_t port = 0;
-		Scene scene = Scene::Menu;
 		Client client;
 
 		float fixedAccumulator = 0.0f;
@@ -61,6 +64,7 @@ namespace Trauma {
 		float cameraZoom = 2.4f;
 		bool cameraInitialised = false;
 
+		bool grabsEnabled = true;
 		uint8_t hotbarSelection = 0;
 		bool dragging = false;
 		bool dragFromClothing = false;

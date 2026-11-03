@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <iostream>
+#include <vector>
 
 namespace Trauma {
 	Server::~Server() {
@@ -111,35 +112,43 @@ namespace Trauma {
 		}
 	}
 
+	InputState Server::SelectInput(ClientSlot& client) {
+		InputState input = client.lastInput;
+		input.jump = false;
+
+		if (!client.inputs.empty()) {
+			const QueuedInput queued = client.inputs.front();
+			client.inputs.pop_front();
+			client.player.parts[Torso].lastInput = queued.sequence;
+			input = queued.input;
+			client.lastInput = input;
+			client.missingInputTicks = 0;
+			return input;
+		}
+
+		if (client.missingInputTicks++ >= Net::InputRedundancy) {
+			input.moveX = 0.0f;
+			input.climb = 0.0f;
+			input.run = false;
+			input.crouch = false;
+			input.crawl = false;
+			input.reachLeft = false;
+			input.reachRight = false;
+		}
+		return input;
+	}
+
 	void Server::StepSimulation() {
 		std::vector<RagdollState*> ragdolls;
 		std::vector<ObjectState*> activeBodies;
 		ragdolls.reserve(MaxPlayers);
-		activeBodies.reserve(TestBodyCount);
+		activeBodies.reserve(TestBodyCount + MaxWorldItems);
+
 		for (ClientSlot& client : clients) {
 			if (!client.bActive)
 				continue;
 
-			InputState input = client.lastInput;
-			input.jump = false;
-			if (!client.inputs.empty()) {
-				const QueuedInput queued = client.inputs.front();
-				client.inputs.pop_front();
-				client.player.parts[Torso].lastInput = queued.sequence;
-				input = queued.input;
-				client.lastInput = input;
-				client.missingInputTicks = 0;
-			}
-			else if (client.missingInputTicks++ >= Net::InputRedundancy) {
-				input.moveX = 0.0f;
-				input.climb = 0.0f;
-				input.run = false;
-				input.crouch = false;
-				input.crawl = false;
-				input.reachLeft = false;
-				input.reachRight = false;
-			}
-			ApplyRagdollInput(client.player, input);
+			ApplyRagdollInput(client.player, SelectInput(client));
 			ragdolls.push_back(&client.player);
 		}
 		for (ObjectState& body : bodies)
@@ -151,24 +160,26 @@ namespace Trauma {
 		++tick;
 	}
 
-	void Server::BroadcastSnapshot() {
-		uint8_t count = 1;
-		for (const ClientSlot& client : clients)
-			if (client.bActive)
-				++count;
+	void Server::SendSnapshotTo(const std::vector<ClientSlot*>& recipients, const Net::PacketWriter& packet) {
+		for (const ClientSlot* recipient : recipients)
+			socket.SendTo(recipient->endpoint, packet.Data().data(), packet.Size());
+	}
 
+	void Server::BroadcastSnapshot() {
+		std::vector<ClientSlot*> recipients;
+		for (ClientSlot& client : clients)
+			if (client.bActive)
+				recipients.push_back(&client);
+
+		const uint8_t count = static_cast<uint8_t>(recipients.size() + 1);
 		uint8_t index = 0;
-		for (const ClientSlot& player : clients) {
-			if (!player.bActive)
-				continue;
+		for (const ClientSlot* player : recipients) {
 			Net::PacketWriter packet(Net::MessageType::Snapshot);
 			packet.Write(tick);
 			packet.Write(index++);
 			packet.Write(count);
-			Net::WriteRagdoll(packet, player.id, player.player);
-			for (const ClientSlot& recipient : clients)
-				if (recipient.bActive)
-					socket.SendTo(recipient.endpoint, packet.Data().data(), packet.Size());
+			Net::WriteRagdoll(packet, player->id, player->player);
+			SendSnapshotTo(recipients, packet);
 		}
 
 		Net::PacketWriter packet(Net::MessageType::Snapshot);
@@ -178,9 +189,7 @@ namespace Trauma {
 		for (size_t body = 0; body < bodies.size(); ++body)
 			Net::WriteObjectState(packet, static_cast<uint8_t>(MaxPlayers + body + 1), bodies[body]);
 		Net::WriteWorldItems(packet, itemKinds, items);
-		for (const ClientSlot& recipient : clients)
-			if (recipient.bActive)
-				socket.SendTo(recipient.endpoint, packet.Data().data(), packet.Size());
+		SendSnapshotTo(recipients, packet);
 	}
 
 	void Server::DropTimedOutClients() {
@@ -215,7 +224,8 @@ namespace Trauma {
 			client.endpoint = endpoint;
 			client.id = static_cast<uint8_t>(index + 1);
 			client.lastSeen = std::chrono::steady_clock::now();
-			client.player = CreateRagdoll({ -200.0f + static_cast<float>(index % 10) * 40.0f, -100.0f - static_cast<float>(index / 10) * 80.0f });
+			client.player = CreateRagdoll({ -200.0f + static_cast<float>(index % 10) * 40.0f,
+				-100.0f - static_cast<float>(index / 10) * 80.0f });
 
 			std::cout << "[server] player " << static_cast<int>(client.id)
 				<< " connected from " << endpoint.ToString() << std::endl;
@@ -255,7 +265,8 @@ namespace Trauma {
 		for (uint8_t index = 0; index < count; ++index) {
 			uint32_t sequence = 0;
 			InputState input;
-			if (!Net::ReadInputEntry(reader, sequence, input) || !std::isfinite(input.moveX) || !std::isfinite(input.aim.x) || !std::isfinite(input.aim.y)
+			if (!Net::ReadInputEntry(reader, sequence, input)
+				|| !std::isfinite(input.moveX) || !std::isfinite(input.aim.x) || !std::isfinite(input.aim.y)
 				|| std::abs(input.aim.x) > 2000.0f || std::abs(input.aim.y) > 2000.0f)
 				return;
 
@@ -286,65 +297,105 @@ namespace Trauma {
 			return;
 		client->lastSeen = std::chrono::steady_clock::now();
 
-		if (action == static_cast<uint8_t>(Net::InventoryAction::Move)) {
-			uint8_t fromClothing = 0, from = 0, toClothing = 0, to = 0;
-			if (!reader.Read(fromClothing) || !reader.Read(from) || !reader.Read(toClothing) || !reader.Read(to))
-				return;
-			MoveInventoryItem(client->player.inventory, fromClothing != 0, from, toClothing != 0, to);
-			return;
+		switch (static_cast<Net::InventoryAction>(action)) {
+			case Net::InventoryAction::Move:
+				HandleInventoryMove(*client, reader);
+				break;
+			case Net::InventoryAction::Drop:
+				HandleInventoryDrop(*client, reader);
+				break;
+			case Net::InventoryAction::Pickup:
+				HandleInventoryPickup(*client, reader);
+				break;
+			default:
+				break;
 		}
+	}
 
-		if (action == static_cast<uint8_t>(Net::InventoryAction::Pickup)) {
-			uint8_t index = 0;
-			if (!reader.Read(index) || index >= items.size())
-				return;
-			if (itemKinds[index] == Item::None)
-				return;
-			Inventory& inventory = client->player.inventory;
-			size_t slot = inventory.hotbar.size();
-			for (size_t free = 0; free < inventory.hotbar.size(); ++free)
-				if (inventory.hotbar[free] == Item::None) {
-					slot = free;
-					break;
-				}
-			if (slot >= inventory.hotbar.size())
-				return;
-			const uint8_t target = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + index + 1);
-			bool holding = false;
-			for (HandGrip& grip : client->player.grips)
-				if (grip.target == target) {
-					holding = true;
-					grip = {};
-				}
-			if (!holding)
-				return;
-			inventory.hotbar[slot] = itemKinds[index];
-			itemKinds[index] = Item::None;
-			items[index] = DeadItemBody();
-			return;
-		}
+	bool Server::HandleInventoryMove(ClientSlot& client, Net::PacketReader& reader) {
+		uint8_t fromClothing = 0;
+		uint8_t from = 0;
+		uint8_t toClothing = 0;
+		uint8_t to = 0;
+		if (!reader.Read(fromClothing) || !reader.Read(from) || !reader.Read(toClothing) || !reader.Read(to))
+			return false;
 
-		if (action != static_cast<uint8_t>(Net::InventoryAction::Drop))
-			return;
-		uint8_t fromClothing = 0, from = 0;
+		return MoveInventoryItem(client.player.inventory, fromClothing != 0, from, toClothing != 0, to);
+	}
+
+	bool Server::HandleInventoryPickup(ClientSlot& client, Net::PacketReader& reader) {
+		uint8_t index = 0;
+		if (!reader.Read(index) || index >= items.size())
+			return false;
+		if (itemKinds[index] == Item::None)
+			return false;
+
+		Inventory& inventory = client.player.inventory;
+		size_t slot = inventory.hotbar.size();
+		for (size_t candidate = 0; candidate < inventory.hotbar.size(); ++candidate)
+			if (inventory.hotbar[candidate] == Item::None) {
+				slot = candidate;
+				break;
+			}
+		if (slot >= inventory.hotbar.size())
+			return false;
+
+		const uint8_t target = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + index + 1);
+		bool holding = false;
+		for (HandGrip& grip : client.player.grips)
+			if (grip.target == target) {
+				holding = true;
+				grip = {};
+			}
+		if (!holding)
+			holding = HandsOnItem(client.player, items[index]);
+		if (!holding)
+			return false;
+
+		inventory.hotbar[slot] = itemKinds[index];
+		itemKinds[index] = Item::None;
+		items[index] = DeadItemBody();
+		return true;
+	}
+
+	bool Server::HandleInventoryDrop(ClientSlot& client, Net::PacketReader& reader) {
+		uint8_t fromClothing = 0;
+		uint8_t from = 0;
 		olc::vf2d position;
 		if (!reader.Read(fromClothing) || !reader.Read(from) || !reader.Read(position.x) || !reader.Read(position.y))
-			return;
+			return false;
 		if (!std::isfinite(position.x) || !std::isfinite(position.y)
 			|| std::abs(position.x) > 2000.0f || position.y < -800.0f || position.y > 1000.0f)
-			return;
+			return false;
 
-		for (size_t slot = 0; slot < items.size(); ++slot) {
-			if (itemKinds[slot] != Item::None)
-				continue;
-			const Item item = TakeInventoryItem(client->player.inventory, fromClothing != 0, from);
-			if (item == Item::None)
-				return;
-			itemKinds[slot] = item;
-			items[slot] = CreateItemBody(item, position);
-			items[slot].velocity = { 0.0f, 40.0f };
-			return;
-		}
+		size_t slot = items.size();
+		for (size_t candidate = 0; candidate < items.size(); ++candidate)
+			if (itemKinds[candidate] == Item::None) {
+				slot = candidate;
+				break;
+			}
+		if (slot >= items.size())
+			return false;
+
+		const Item item = TakeInventoryItem(client.player.inventory, fromClothing != 0, from);
+		if (item == Item::None)
+			return false;
+
+		ObjectState body = CreateItemBody(item, position);
+		// The drop has to stay on the thrower's side of anything between them and the cursor.
+		std::array<ObjectState, TestBodyCount + MaxWorldItems> obstacles{};
+		size_t obstacleCount = 0;
+		for (const ObjectState& object : bodies)
+			obstacles[obstacleCount++] = object;
+		for (size_t other = 0; other < items.size(); ++other)
+			if (itemKinds[other] != Item::None)
+				obstacles[obstacleCount++] = items[other];
+		body.position = ClampDropPosition(DropHandOrigin(client.player, position), position, body.radius,
+			obstacles.data(), obstacleCount);
+		body.velocity = { 0.0f, 40.0f };
+		items[slot] = body;
+		itemKinds[slot] = item;
+		return true;
 	}
 
 	void Server::SendWelcome(const ClientSlot& client) {

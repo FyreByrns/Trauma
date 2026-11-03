@@ -115,10 +115,6 @@ namespace Trauma::Net {
 		return ntohs(local.sin_port);
 	}
 
-	bool Socket::IsOpen() const {
-		return handle != INVALID_SOCKET;
-	}
-
 	bool ResolveEndpoint(const std::string& host, uint16_t port, Endpoint& endpoint) {
 		addrinfo hints{};
 		hints.ai_family = AF_INET;

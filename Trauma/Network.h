@@ -7,10 +7,8 @@
 #include <cstdint>
 #include <string>
 
-namespace Trauma::Net
-{
-	class Network
-	{
+namespace Trauma::Net {
+	class Network {
 	public:
 		Network();
 		~Network();
@@ -23,16 +21,14 @@ namespace Trauma::Net
 		bool bReady = false;
 	};
 
-	struct Endpoint
-	{
+	struct Endpoint {
 		sockaddr_in address{};
 
 		bool operator==(const Endpoint& other) const;
 		std::string ToString() const;
 	};
 
-	class Socket
-	{
+	class Socket {
 	public:
 		Socket() = default;
 		~Socket();
@@ -44,7 +40,6 @@ namespace Trauma::Net
 		bool SendTo(const Endpoint& endpoint, const void* data, size_t size) const;
 		int ReceiveFrom(Endpoint& endpoint, void* buffer, size_t capacity) const;
 		uint16_t GetPort() const;
-		bool IsOpen() const;
 
 	private:
 		SOCKET handle = INVALID_SOCKET;
