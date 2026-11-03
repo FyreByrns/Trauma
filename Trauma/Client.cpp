@@ -180,10 +180,24 @@ namespace Trauma {
 	void Client::DropItem(bool fromClothing, size_t index, const olc::vf2d& position) {
 		if (status != Status::Connected)
 			return;
+		const Item item = fromClothing
+			? (index < predicted.inventory.clothing.size() ? predicted.inventory.clothing[index] : Item::None)
+			: (index < predicted.inventory.hotbar.size() ? predicted.inventory.hotbar[index] : Item::None);
+		if (item == Item::None)
+			return;
+
 		Net::PacketWriter packet(Net::MessageType::Inventory);
 		Net::WriteInventoryDrop(packet, fromClothing, static_cast<uint8_t>(index), position);
 		SendPacket(packet);
 		TakeInventoryItem(predicted.inventory, fromClothing, index);
+
+		for (WorldItem& slot : worldItems)
+			if (slot.item == Item::None) {
+				slot.item = item;
+				slot.body = CreateItemBody(item, position);
+				slot.body.velocity = { 0.0f, 40.0f };
+				break;
+			}
 	}
 
 	bool Client::GetPickupCandidate(size_t& index) const {

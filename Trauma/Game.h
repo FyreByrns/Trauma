@@ -27,11 +27,18 @@ namespace Trauma {
 			ItemDrag payload;
 		};
 
+		struct DropPreview {
+			bool active = false;
+			olc::vf2d position;
+			Item item = Item::None;
+		};
+
 		bool UpdatePlay(float fElapsedTime);
 		void LeavePlay();
 		void UpdateClientInput(float deltaTime);
 		void UpdateInventoryInput();
 		void UpdateGrabMode();
+		void UpdateDropPreview();
 		InputState SampleInput(bool bJump) const;
 		void UpdateLocalRenderState();
 		void UpdateRenderPosition();
@@ -47,6 +54,7 @@ namespace Trauma {
 			float angle, olc::Pixel colour);
 		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
 		void DrawItem(Item item, const ObjectState& body);
+		void DrawDropPreview();
 
 		void BuildUi();
 		void BuildStatus();
@@ -81,5 +89,8 @@ namespace Trauma {
 
 		ItemDrag drag;
 		bool dragDelivered = false;
+		olc::vf2d hudMin;
+		olc::vf2d hudMax;
+		DropPreview dropPreview;
 	};
 }

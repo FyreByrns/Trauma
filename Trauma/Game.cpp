@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <utility>
+#include <vector>
 
 namespace Trauma {
 	namespace {
@@ -19,6 +20,7 @@ namespace Trauma {
 
 		constexpr float GrabToggleWidth = 92.0f;
 		constexpr float SlotCaptionFontSize = 12.0f;
+		constexpr float DropOffset = 4.0f;
 
 		constexpr float CameraLazyFollowRate = 9.0f;
 		constexpr float CameraMinZoom = 0.8f;
@@ -76,6 +78,9 @@ namespace Trauma {
 		UpdateLocalRenderState();
 		UpdateRenderPosition();
 		UpdateCamera(deltaTime);
+
+		if (!paused)
+			UpdateDropPreview();
 
 		draw.Clear(olc::Pixel(5, 10, 17));
 		draw.SetWorldTransform(camera.GetWorldTransform());
@@ -150,6 +155,52 @@ namespace Trauma {
 			grabsEnabled = !grabsEnabled;
 	}
 
+	void Game::UpdateDropPreview() {
+		dropPreview = DropPreview{};
+		if (!drag.active || drag.item == Item::None)
+			return;
+
+		const olc::vf2d pointer = mouse.GetPosition();
+		if (pointer.x >= hudMin.x && pointer.x <= hudMax.x
+			&& pointer.y >= hudMin.y && pointer.y <= hudMax.y)
+			return;
+
+		const olc::vf2d target = camera.GetWorldTransform().inverse(pointer);
+		const ObjectState ghost = CreateItemBody(drag.item, target);
+		if (ghost.radius <= 0.0f)
+			return;
+
+		std::array<ObjectState, MaxWorldItems + MaxPlayers> obstacles{};
+		size_t obstacleCount = 0;
+		for (const Client::WorldItem& item : client.GetWorldItems())
+			if (item.item != Item::None && obstacleCount < obstacles.size())
+				obstacles[obstacleCount++] = item.body;
+		for (const Client::ObjectView& view : client.GetObjects()) {
+			if (obstacleCount >= obstacles.size())
+				break;
+			if (view.shape == Shape::Circle) {
+				obstacles[obstacleCount++] = CreateCircle(view.position, view.radius, 1.0f);
+				continue;
+			}
+			if (view.vertexCount < 3)
+				continue;
+			obstacles[obstacleCount++] = CreatePolygon(view.position,
+				std::vector<olc::vf2d>(view.localVertices.begin(), view.localVertices.begin() + view.vertexCount),
+				1.0f, view.angle);
+		}
+
+		const olc::vf2d hand = DropHandOrigin(client.GetLocalRagdoll(), target);
+		olc::vf2d offset = target - hand;
+		const float distance = offset.mag();
+		if (distance > DropOffset)
+			offset *= DropOffset / distance;
+
+		dropPreview.active = true;
+		dropPreview.item = drag.item;
+		dropPreview.position = ClampDropPosition(hand, hand + offset, ghost.radius,
+			obstacles.data(), obstacleCount);
+	}
+
 	void Game::UpdateLocalRenderState() {
 		if (client.GetStatus() != Client::Status::Connected) {
 			localRenderReady = false;
@@ -183,6 +234,12 @@ namespace Trauma {
 		const olc::vf2d mouseWorld = camera.GetWorldTransform().inverse(mouse.GetPosition());
 		const olc::vf2d aim = mouseWorld - client.GetLocalRagdoll().parts[Torso].position;
 		input.aim = { std::clamp(aim.x, -2000.0f, 2000.0f), std::clamp(aim.y, -2000.0f, 2000.0f) };
+
+		if (drag.active && dropPreview.active) {
+			input.reachLeft = false;
+			input.reachRight = true;
+			input.grab = false;
+		}
 
 		if (keyboard.GetKey(olc::Key::A).bHeld || keyboard.GetKey(olc::Key::LEFT).bHeld)
 			input.moveX -= 1.0f;
@@ -266,6 +323,8 @@ namespace Trauma {
 		for (const Client::WorldItem& item : client.GetWorldItems())
 			if (item.item != Item::None)
 				DrawItem(item.item, item.body);
+
+		DrawDropPreview();
 	}
 
 	void Game::DrawObjects() {
@@ -345,6 +404,33 @@ namespace Trauma {
 			draw.FilledTriangle(vertices[0], vertices[i], vertices[i + 1], ItemColour(item));
 	}
 
+	void Game::DrawDropPreview() {
+		if (!dropPreview.active)
+			return;
+
+		const ObjectState body = CreateItemBody(dropPreview.item, dropPreview.position);
+		if (body.radius <= 0.0f)
+			return;
+
+		const olc::Pixel colour(225, 235, 245);
+		if (body.shape != Shape::Polygon || body.vertexCount < 3) {
+			constexpr int facets = 20;
+			olc::vf2d previous{ body.position.x + body.radius, body.position.y };
+			for (int i = 1; i <= facets; ++i) {
+				const float turn = TwoPi * static_cast<float>(i) / static_cast<float>(facets);
+				const olc::vf2d next{ body.position.x + std::cos(turn) * body.radius,
+					body.position.y + std::sin(turn) * body.radius };
+				draw.Line(previous, next, colour);
+				previous = next;
+			}
+			return;
+		}
+
+		const Polygon outline = WorldVertices(body);
+		for (int i = 0; i < outline.count; ++i)
+			draw.Line(outline.vertices[i], outline.vertices[(i + 1) % outline.count], colour);
+	}
+
 	void Game::BuildUi() {
 		dragDelivered = false;
 		BuildStatus();
@@ -386,6 +472,8 @@ namespace Trauma {
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(HotbarSlotGap, HotbarSlotGap));
 		ImGui::Begin("##hud", nullptr,
 			OverlayFlags | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoBackground);
+		hudMin = { ImGui::GetWindowPos().x, ImGui::GetWindowPos().y };
+		hudMax = { hudMin.x + ImGui::GetWindowSize().x, hudMin.y + ImGui::GetWindowSize().y };
 
 		const Item held = inventory.hotbar[inventory.selected];
 		ImGui::TextColored(HudText, "%s", held == Item::None ? " " : ItemName(held));
@@ -502,11 +590,8 @@ namespace Trauma {
 		if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left))
 			return;
 
-		if (!dragDelivered) {
-			const olc::vf2d world = camera.GetWorldTransform().inverse(
-				olc::vf2d(io.MousePos.x, io.MousePos.y));
-			client.DropItem(drag.clothing, drag.index, world);
-		}
+		if (!dragDelivered && dropPreview.active)
+			client.DropItem(drag.clothing, drag.index, dropPreview.position);
 		drag = ItemDrag{};
 	}
 
