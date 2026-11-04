@@ -128,8 +128,10 @@ namespace Trauma {
 		const float stride = std::clamp(std::abs(ragdoll.input.moveX), 0.0f, 1.0f);
 		const float swing = std::sin(ragdoll.gaitPhase) * stride;
 		if (movement == MovementState::Crawling) {
-			targets[Head] = torso + olc::vf2d{14.0f * ragdoll.facing, -2.0f};
-			targets[Hips] = torso + olc::vf2d{-12.0f * ragdoll.facing, 0.0f};
+			const olc::vf2d headOffset{ 14.0f * ragdoll.facing, -2.0f };
+			const olc::vf2d hipOffset{ -12.0f * ragdoll.facing, 0.0f };
+			targets[Head] = torso + headOffset * (RagdollJoints()[0].length / headOffset.mag());
+			targets[Hips] = torso + hipOffset * (RagdollJoints()[1].length / hipOffset.mag());
 		}
 		const olc::vf2d hip = targets[Hips];
 		for (int leg = 0; leg < 2; ++leg) {
@@ -391,8 +393,11 @@ namespace Trauma {
 
 	inline void HoldGroundedFooting(RagdollState& ragdoll) {
 		const bool idle = !ragdoll.ladder && std::abs(ragdoll.input.moveX) <= 0.01f;
-		const bool supported = ragdoll.parts[LeftFoot].grounded || ragdoll.parts[RightFoot].grounded;
-		if (!idle || !supported) {
+		const bool feet = ragdoll.parts[LeftFoot].grounded || ragdoll.parts[RightFoot].grounded;
+		const bool crawlContact = GetMovementState(ragdoll.input) == MovementState::Crawling
+			&& (ragdoll.parts[Torso].grounded || ragdoll.parts[Hips].grounded
+				|| ragdoll.parts[LeftHand].grounded || ragdoll.parts[RightHand].grounded);
+		if (!idle || !(feet || crawlContact)) {
 			ragdoll.footingAnchored = false;
 			return;
 		}
