@@ -45,6 +45,8 @@ namespace Trauma {
 
 	void Client::ResetSession() {
 		playerId = 0;
+		ResetWorld(physics);
+		CreateTerrainBodies(physics);
 		predicted = RagdollState{};
 		previousLocal = {};
 		predictedRagdolls.clear();
@@ -462,14 +464,19 @@ namespace Trauma {
 
 	void Client::Reconcile(const RagdollState& authoritative, uint32_t lastInput) {
 		predicted = authoritative;
+		for (size_t i = 0; i < PartCount; ++i)
+			SetBodyTransform(EnsureBody(physics, predicted.parts[i], RagdollGroup(physics, &predicted)),
+				predicted.parts[i]);
+		for (PredictedBody& body : predictedBodies)
+			SetBodyTransform(EnsureBody(physics, body.state), body.state);
+		for (WorldItem& item : worldItems)
+			SetBodyTransform(EnsureBody(physics, item.body), item.body);
 		while (!pending.empty() && pending.front().sequence <= lastInput)
 			pending.pop_front();
-		for (const SentInput& sent : pending)
-			StepPrediction(sent.input);
 	}
 
 	void Client::StepPrediction(const InputState& input) {
-		ApplyRagdollInput(predicted, input);
+		ApplyRagdollInput(physics, predicted, input);
 
 		std::vector<RagdollState*> ragdolls;
 		std::vector<ObjectState*> bodies;
@@ -481,7 +488,7 @@ namespace Trauma {
 			}
 			InputState remoteInput = other.state.input;
 			remoteInput.jump = false;
-			ApplyRagdollInput(other.state, remoteInput);
+			ApplyRagdollInput(physics, other.state, remoteInput);
 			ragdolls.push_back(&other.state);
 		}
 		if (!addedLocal)
@@ -491,7 +498,7 @@ namespace Trauma {
 		for (WorldItem& item : worldItems)
 			bodies.push_back(&item.body);
 
-		StepPhysics(ragdolls, bodies, FixedDeltaTime);
+		StepPhysics(physics, ragdolls, bodies, FixedDeltaTime);
 	}
 
 	void Client::SmoothRemoteObjects(float fElapsedTime) {

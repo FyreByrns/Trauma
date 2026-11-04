@@ -61,6 +61,7 @@ namespace Trauma {
 
 	private:
 		Net::Socket socket;
+	PhysicsWorld physics;
 		std::array<ClientSlot, MaxPlayers> clients;
 		std::array<ObjectState, TestBodyCount> bodies;
 		std::array<ObjectState, MaxWorldItems> items;

@@ -1,10 +1,10 @@
 #pragma once
+#include "box2d/box2d.h"
 #include "olcPixelGameEngine3.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <vector>
 
 namespace Trauma {
@@ -12,29 +12,22 @@ namespace Trauma {
 	constexpr float Gravity = 1600.0f;
 	constexpr float PlayerRadius = 10.0f;
 	constexpr float TwoPi = 6.2831853f;
-
-	constexpr float ContactFriction = 3.0f;
-	constexpr float RestitutionThreshold = 70.0f;
-	constexpr float Restitution = 0.15f;
-	constexpr float ContactSlop = 0.05f;
-	constexpr float ContactCorrection = 0.5f;
-	constexpr float ContactMargin = ContactSlop;
-	constexpr float AngularDamping = 1.5f;
-	constexpr float GroundedSpinDamping = 8.0f;
-	constexpr float AxisSnap = 0.03f;
-	constexpr float MaxAngularSpeed = 25.0f;
-	constexpr float RestSpeed = 4.0f;
 	constexpr float RestDamping = 0.5f;
-	constexpr float SleepSpeed = 3.0f;
-	constexpr float SleepDelay = 0.6f;
+	constexpr float RestSpeed = 4.0f;
 	constexpr float WakeSpeed = 6.0f;
+
+	constexpr float BodyFriction = 0.6f;
+	constexpr float BodyRestitution = 0.05f;
+	constexpr float BodyAngularDamping = 1.5f;
+	constexpr float GroundContactNormal = 0.6f;
+	constexpr float MinimumRadius = 0.1f;
+	constexpr int MaxPolygonVertices = 8;
+	constexpr int MaxBodyContacts = 8;
 
 	enum class Shape : uint8_t {
 		Circle = 0,
 		Polygon = 1
 	};
-
-	constexpr int MaxPolygonVertices = 8;
 
 	struct Polygon {
 		std::array<olc::vf2d, MaxPolygonVertices> vertices{};
@@ -55,29 +48,6 @@ namespace Trauma {
 			area += a.x * b.y - b.x * a.y;
 		}
 		return area * 0.5f;
-	}
-
-	inline float PolygonInverseInertia(float inverseMass, const olc::vf2d* vertices, int count) {
-		if (inverseMass <= 0.0f || count < 3)
-			return 0.0f;
-		float numerator = 0.0f;
-		float denominator = 0.0f;
-		for (int i = 0; i < count; ++i) {
-			const olc::vf2d& a = vertices[i];
-			const olc::vf2d& b = vertices[(i + 1) % count];
-			const float cross = a.x * b.y - b.x * a.y;
-			numerator += cross * (a.dot(a) + a.dot(b) + b.dot(b));
-			denominator += cross;
-		}
-		if (std::abs(numerator) < 0.0001f || std::abs(denominator) < 0.0001f)
-			return 0.0f;
-		return 6.0f * inverseMass * denominator / numerator;
-	}
-
-	inline float CircleInverseInertia(float inverseMass, float radius) {
-		if (inverseMass <= 0.0f || radius <= 0.0f)
-			return 0.0f;
-		return 2.0f * inverseMass / (radius * radius);
 	}
 
 	struct ObjectState {
@@ -139,7 +109,6 @@ namespace Trauma {
 		}
 		body.halfExtents = { extentX, extentY };
 		body.radius = radius;
-		body.inverseInertia = PolygonInverseInertia(inverseMass, body.localVertices.data(), count);
 		return body;
 	}
 
@@ -156,17 +125,37 @@ namespace Trauma {
 		body.position = position;
 		body.radius = radius;
 		body.inverseMass = inverseMass;
-		body.inverseInertia = CircleInverseInertia(inverseMass, radius);
 		return body;
 	}
 
-	struct Contact {
-		olc::vf2d point;
-		olc::vf2d normal;
-		float depth = 0.0f;
-	};
+	inline float ShapeArea(const ObjectState& body) {
+		if (body.shape == Shape::Polygon && body.vertexCount >= 3)
+			return std::abs(PolygonSignedArea(body.localVertices.data(), body.vertexCount));
+		return 3.14159265f * std::max(body.radius, MinimumRadius) * std::max(body.radius, MinimumRadius);
+	}
 
-	constexpr int MaxContacts = 4;
+	inline float PolygonInverseInertia(float inverseMass, const olc::vf2d* vertices, int count) {
+		if (inverseMass <= 0.0f || count < 3)
+			return 0.0f;
+		float numerator = 0.0f;
+		float denominator = 0.0f;
+		for (int i = 0; i < count; ++i) {
+			const olc::vf2d& a = vertices[i];
+			const olc::vf2d& b = vertices[(i + 1) % count];
+			const float cross = a.x * b.y - b.x * a.y;
+			numerator += cross * (a.dot(a) + a.dot(b) + b.dot(b));
+			denominator += cross;
+		}
+		if (std::abs(numerator) < 0.0001f || std::abs(denominator) < 0.0001f)
+			return 0.0f;
+		return 6.0f * inverseMass * denominator / numerator;
+	}
+
+	inline float CircleInverseInertia(float inverseMass, float radius) {
+		if (inverseMass <= 0.0f || radius <= 0.0f)
+			return 0.0f;
+		return 2.0f * inverseMass / (radius * radius);
+	}
 
 	inline Polygon WorldVertices(const ObjectState& body) {
 		Polygon result;
@@ -176,16 +165,6 @@ namespace Trauma {
 		for (int i = 0; i < result.count; ++i)
 			result.vertices[i] = body.position + Rotate(body.localVertices[i], body.angle);
 		return result;
-	}
-
-	inline void ProjectVertices(const Polygon& polygon, const olc::vf2d& axis,
-		float& minimum, float& maximum) {
-		minimum = maximum = polygon.vertices[0].dot(axis);
-		for (int i = 1; i < polygon.count; ++i) {
-			const float value = polygon.vertices[i].dot(axis);
-			minimum = std::min(minimum, value);
-			maximum = std::max(maximum, value);
-		}
 	}
 
 	inline bool ContainsPoint(const Polygon& polygon, const olc::vf2d& point, float margin = 0.0f) {
@@ -203,285 +182,210 @@ namespace Trauma {
 		return true;
 	}
 
-
-	inline olc::vf2d SnapContactNormal(const olc::vf2d& normal) {
-		if (std::abs(normal.x) < AxisSnap)
-			return { 0.0f, normal.y > 0.0f ? 1.0f : -1.0f };
-		if (std::abs(normal.y) < AxisSnap)
-			return { normal.x > 0.0f ? 1.0f : -1.0f, 0.0f };
-		return normal;
-	}
-
 	inline void Wake(ObjectState& body) {
 		body.sleeping = false;
 		body.restTime = 0.0f;
 	}
 
-	inline void UpdateSleep(ObjectState& body, float step) {
-		if (body.inverseMass <= 0.0f)
-			return;
-		const bool resting = body.grounded && body.velocity.mag() < SleepSpeed
-			&& std::abs(body.angularVelocity) < SleepSpeed;
-		body.restTime = resting ? body.restTime + step : 0.0f;
-		if (body.restTime < SleepDelay)
-			return;
-		body.sleeping = true;
-		body.velocity = { 0.0f, 0.0f };
-		body.angularVelocity = 0.0f;
+	inline uint32_t BodySignature(const ObjectState& object) {
+		uint32_t hash = 2166136261u;
+		hash = (hash ^ static_cast<uint32_t>(object.shape)) * 16777619u;
+		hash = (hash ^ static_cast<uint32_t>(object.vertexCount)) * 16777619u;
+		hash = (hash ^ static_cast<uint32_t>(std::abs(object.radius) * 16.0f)) * 16777619u;
+		hash = (hash ^ static_cast<uint32_t>(object.inverseMass * 1024.0f)) * 16777619u;
+		for (int i = 0; i < object.vertexCount; ++i) {
+			hash = (hash ^ static_cast<uint32_t>(object.localVertices[i].x * 16.0f + 1024.0f)) * 16777619u;
+			hash = (hash ^ static_cast<uint32_t>(object.localVertices[i].y * 16.0f + 1024.0f)) * 16777619u;
+		}
+		return hash;
 	}
 
-	inline bool PolygonPenetration(const ObjectState& first, const ObjectState& second,
-		olc::vf2d& normal, float& depth) {
-		const Polygon firstVertices = WorldVertices(first);
-		const Polygon secondVertices = WorldVertices(second);
-		if (firstVertices.count < 3 || secondVertices.count < 3)
-			return false;
+	struct PhysicsBody {
+		const ObjectState* key = nullptr;
+		b2BodyId body = b2_nullBodyId;
+		uint32_t signature = 0;
+		int group = 0;
+		bool seen = false;
+	};
 
-		float shallowest = std::numeric_limits<float>::max();
-		olc::vf2d axis = { 1.0f, 0.0f };
-		bool separated = false;
+	struct PhysicsRig {
+		const void* key = nullptr;
+		int group = 0;
+		std::array<b2BodyId, 16> bodies{};
+		std::array<b2JointId, 16> joints{};
+		std::array<b2JointId, 2> grips{};
+		std::array<uint8_t, 2> gripTargets{};
+		bool seen = false;
+	};
 
-		const auto testOutline = [&](const Polygon& polygon, float bias) {
-			for (int i = 0; i < polygon.count; ++i) {
-				const olc::vf2d edge = polygon.vertices[(i + 1) % polygon.count] - polygon.vertices[i];
-				const float length = edge.mag();
-				if (length < 0.0001f)
-					continue;
-				const olc::vf2d candidate = edge.perp() / length;
-				float firstMinimum = 0.0f, firstMaximum = 0.0f, secondMinimum = 0.0f, secondMaximum = 0.0f;
-				ProjectVertices(firstVertices, candidate, firstMinimum, firstMaximum);
-				ProjectVertices(secondVertices, candidate, secondMinimum, secondMaximum);
-				if (firstMaximum < secondMinimum - ContactMargin
-					|| secondMaximum < firstMinimum - ContactMargin) {
-					separated = true;
-					return;
-				}
-				const float overlap = std::min(firstMaximum, secondMaximum) - std::max(firstMinimum, secondMinimum);
-				if (overlap < shallowest - bias) {
-					shallowest = overlap;
-					axis = candidate;
-				}
+	struct PhysicsWorld {
+		b2WorldId world = b2_nullWorldId;
+		std::vector<b2BodyId> terrain;
+		std::vector<PhysicsBody> bodies;
+		std::vector<PhysicsRig> rigs;
+	};
+
+	inline void ResetWorld(PhysicsWorld& physics) {
+		for (PhysicsBody& entry : physics.bodies)
+			if (b2Body_IsValid(entry.body))
+				b2DestroyBody(entry.body);
+		physics.bodies.clear();
+		physics.rigs.clear();
+
+		for (const b2BodyId body : physics.terrain)
+			if (b2Body_IsValid(body))
+				b2DestroyBody(body);
+		physics.terrain.clear();
+
+		if (b2World_IsValid(physics.world))
+			b2DestroyWorld(physics.world);
+
+		b2WorldDef def = b2DefaultWorldDef();
+		def.gravity = { 0.0f, Gravity };
+		def.enableSleep = true;
+		def.enableContinuous = true;
+		physics.world = b2CreateWorld(&def);
+	}
+
+	inline b2BodyId BuildBody(PhysicsWorld& physics, const ObjectState& object, int group = 0) {
+		b2BodyDef def = b2DefaultBodyDef();
+		def.type = object.inverseMass > 0.0f ? b2_dynamicBody : b2_staticBody;
+		def.position = { object.position.x, object.position.y };
+		def.rotation = b2MakeRot(object.angle);
+		def.linearVelocity = { object.velocity.x, object.velocity.y };
+		def.angularVelocity = object.angularVelocity;
+		def.angularDamping = BodyAngularDamping;
+		def.enableSleep = object.inverseMass > 0.0f;
+		def.isAwake = true;
+
+		const b2BodyId body = b2CreateBody(physics.world, &def);
+
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.material.friction = BodyFriction;
+		shapeDef.material.restitution = BodyRestitution;
+		shapeDef.filter.groupIndex = group;
+		shapeDef.density = object.inverseMass > 0.0f
+			? std::max((1.0f / object.inverseMass) / std::max(ShapeArea(object), 0.0001f), 0.0001f)
+			: 0.0f;
+
+		if (object.shape == Shape::Polygon && object.vertexCount >= 3) {
+			b2Vec2 points[MaxPolygonVertices];
+			for (int i = 0; i < object.vertexCount; ++i)
+				points[i] = { object.localVertices[i].x, object.localVertices[i].y };
+			const b2Hull hull = b2ComputeHull(points, object.vertexCount);
+			if (hull.count >= 3) {
+				const b2Polygon polygon = b2MakePolygon(&hull, 0.0f);
+				b2CreatePolygonShape(body, &shapeDef, &polygon);
 			}
-		};
-		testOutline(firstVertices, 0.5f);
-		if (!separated)
-			testOutline(secondVertices, 0.0f);
-		if (separated)
-			return false;
+		}
+		else {
+			const b2Circle circle{ { 0.0f, 0.0f }, std::max(object.radius, MinimumRadius) };
+			b2CreateCircleShape(body, &shapeDef, &circle);
+		}
 
-		if ((second.position - first.position).dot(axis) < 0.0f)
-			axis = -axis;
-		axis = SnapContactNormal(axis);
-		normal = axis;
-		depth = shallowest;
-		return true;
+		return body;
 	}
 
-	inline bool CirclePolygonContact(const ObjectState& circle, const ObjectState& polygon, Contact& contact) {
-		const Polygon outline = WorldVertices(polygon);
-		if (outline.count < 3)
-			return false;
+	inline b2BodyId EnsureBody(PhysicsWorld& physics, const ObjectState& object, int group = 0) {
+		const uint32_t signature = BodySignature(object);
+		for (PhysicsBody& entry : physics.bodies)
+			if (entry.key == &object && entry.signature == signature && entry.group == group) {
+				entry.seen = true;
+				return entry.body;
+			}
+		for (PhysicsBody& entry : physics.bodies)
+			if (entry.key == &object) {
+				if (b2Body_IsValid(entry.body))
+					b2DestroyBody(entry.body);
+				entry.body = BuildBody(physics, object, group);
+				entry.signature = signature;
+				entry.group = group;
+				entry.seen = true;
+				return entry.body;
+			}
 
-		float closestDistance = std::numeric_limits<float>::max();
-		olc::vf2d closestPoint = polygon.position;
-		olc::vf2d closestOutward = { 0.0f, -1.0f };
-		for (int i = 0; i < outline.count; ++i) {
-			const olc::vf2d& a = outline.vertices[i];
-			const olc::vf2d& b = outline.vertices[(i + 1) % outline.count];
-			const olc::vf2d edge = b - a;
-			const float squared = edge.dot(edge);
-			if (squared < 0.0001f)
+		PhysicsBody entry;
+		entry.key = &object;
+		entry.body = BuildBody(physics, object, group);
+		entry.signature = signature;
+		entry.group = group;
+		entry.seen = true;
+		physics.bodies.push_back(entry);
+		return entry.body;
+	}
+
+	inline void SetBodyTransform(b2BodyId body, const ObjectState& object) {
+		b2Body_SetTransform(body, { object.position.x, object.position.y }, b2MakeRot(object.angle));
+		b2Body_SetLinearVelocity(body, { object.velocity.x, object.velocity.y });
+		b2Body_SetAngularVelocity(body, object.angularVelocity);
+		b2Body_SetAwake(body, true);
+	}
+
+	inline void SyncBody(ObjectState& object, b2BodyId body) {
+		if (!b2Body_IsValid(body))
+			return;
+
+		const b2Transform transform = b2Body_GetTransform(body);
+		const b2Vec2 velocity = b2Body_GetLinearVelocity(body);
+		object.position = { transform.p.x, transform.p.y };
+		object.angle = b2Rot_GetAngle(transform.q);
+		object.velocity = { velocity.x, velocity.y };
+		object.angularVelocity = b2Body_GetAngularVelocity(body);
+		object.sleeping = !b2Body_IsAwake(body);
+
+		b2ContactData contacts[MaxBodyContacts];
+		const int count = b2Body_GetContactData(body, contacts, MaxBodyContacts);
+		bool grounded = false;
+		for (int i = 0; i < count && !grounded; ++i)
+			if (contacts[i].manifold.pointCount > 0
+				&& std::abs(contacts[i].manifold.normal.y) > GroundContactNormal)
+				grounded = true;
+		object.grounded = grounded;
+		object.supported = grounded;
+	}
+
+	inline void PruneBodies(PhysicsWorld& physics) {
+		std::vector<PhysicsBody> kept;
+		kept.reserve(physics.bodies.size());
+		for (PhysicsBody& entry : physics.bodies) {
+			if (entry.seen) {
+				entry.seen = false;
+				kept.push_back(entry);
 				continue;
-			const float t = std::clamp((circle.position - a).dot(edge) / squared, 0.0f, 1.0f);
-			const olc::vf2d point = a + edge * t;
-			const float distance = (circle.position - point).mag();
-			if (distance < closestDistance) {
-				closestDistance = distance;
-				closestPoint = point;
-				closestOutward = edge.perp() / std::sqrt(squared);
 			}
+			if (b2Body_IsValid(entry.body))
+				b2DestroyBody(entry.body);
 		}
+		physics.bodies.swap(kept);
 
-		if (!ContainsPoint(outline, circle.position)) {
-			if (closestDistance >= circle.radius + ContactMargin || closestDistance < 0.0001f)
-				return false;
-			contact.normal = (closestPoint - circle.position) / closestDistance;
-			contact.depth = circle.radius - closestDistance;
-		}
-		else {
-			contact.normal = closestOutward;
-			contact.depth = circle.radius + closestDistance;
-		}
-		contact.point = closestPoint;
-		return true;
-	}
-
-	inline bool CircleCircleContact(const ObjectState& first, const ObjectState& second, Contact& contact) {
-		const olc::vf2d offset = second.position - first.position;
-		const float distance = offset.mag();
-		if (distance >= first.radius + second.radius + ContactMargin)
-			return false;
-		contact.normal = distance > 0.0001f ? offset / distance : olc::vf2d{ 1.0f, 0.0f };
-		contact.depth = first.radius + second.radius - distance;
-		contact.point = first.position + contact.normal * first.radius;
-		return true;
-	}
-
-	inline int PolygonContacts(const ObjectState& first, const ObjectState& second,
-		const olc::vf2d& normal, float depth, Contact* contacts) {
-		const Polygon firstOutline = WorldVertices(first);
-		const Polygon secondOutline = WorldVertices(second);
-		int count = 0;
-		for (int i = 0; i < secondOutline.count && count < MaxContacts; ++i)
-			if (ContainsPoint(firstOutline, secondOutline.vertices[i], 0.05f))
-				contacts[count++] = { secondOutline.vertices[i], normal, depth };
-		for (int i = 0; i < firstOutline.count && count < MaxContacts; ++i)
-			if (ContainsPoint(secondOutline, firstOutline.vertices[i], 0.05f))
-				contacts[count++] = { firstOutline.vertices[i], normal, depth };
-		if (count > 0)
-			return count;
-
-		olc::vf2d firstSupport = first.position;
-		float firstDeepest = -std::numeric_limits<float>::max();
-		for (int i = 0; i < firstOutline.count; ++i) {
-			const float projection = firstOutline.vertices[i].dot(normal);
-			if (projection > firstDeepest) {
-				firstDeepest = projection;
-				firstSupport = firstOutline.vertices[i];
+		std::vector<PhysicsRig> keptRigs;
+		keptRigs.reserve(physics.rigs.size());
+		for (PhysicsRig& rig : physics.rigs) {
+			if (rig.seen) {
+				rig.seen = false;
+				keptRigs.push_back(rig);
+				continue;
 			}
+			for (b2JointId& joint : rig.joints)
+				if (b2Joint_IsValid(joint))
+					b2DestroyJoint(joint);
+			for (b2JointId& grip : rig.grips)
+				if (b2Joint_IsValid(grip))
+					b2DestroyJoint(grip);
 		}
-		olc::vf2d secondSupport = second.position;
-		float secondDeepest = std::numeric_limits<float>::max();
-		for (int i = 0; i < secondOutline.count; ++i) {
-			const float projection = secondOutline.vertices[i].dot(normal);
-			if (projection < secondDeepest) {
-				secondDeepest = projection;
-				secondSupport = secondOutline.vertices[i];
-			}
-		}
-		contacts[0] = { (firstSupport + secondSupport) * 0.5f, normal, depth };
-		return 1;
+		physics.rigs.swap(keptRigs);
 	}
-
-
-	inline void ApplyContact(ObjectState& first, ObjectState& second, const Contact& contact) {
-		const olc::vf2d armFirst = contact.point - first.position;
-		const olc::vf2d armSecond = contact.point - second.position;
-
-		const olc::vf2d firstVelocity = first.velocity + armFirst.perp() * first.angularVelocity;
-		const olc::vf2d secondVelocity = second.velocity + armSecond.perp() * second.angularVelocity;
-		const float normalSpeed = (secondVelocity - firstVelocity).dot(contact.normal);
-		if (normalSpeed > 0.0f)
-			return;
-
-		const float firstLever = armFirst.cross(contact.normal);
-		const float secondLever = armSecond.cross(contact.normal);
-		const float normalMass = first.inverseMass + second.inverseMass
-			+ first.inverseInertia * firstLever * firstLever + second.inverseInertia * secondLever * secondLever;
-		if (normalMass <= 0.0f)
-			return;
-
-		const float restitution = normalSpeed < -RestitutionThreshold ? Restitution : 0.0f;
-		const float impulse = -(1.0f + restitution) * normalSpeed / normalMass;
-		const olc::vf2d push = contact.normal * impulse;
-		first.velocity -= push * first.inverseMass;
-		second.velocity += push * second.inverseMass;
-		first.angularVelocity -= first.inverseInertia * armFirst.cross(push);
-		second.angularVelocity += second.inverseInertia * armSecond.cross(push);
-
-		const olc::vf2d tangent = contact.normal.perp();
-		const olc::vf2d firstTangent = first.velocity + armFirst.perp() * first.angularVelocity;
-		const olc::vf2d secondTangent = second.velocity + armSecond.perp() * second.angularVelocity;
-		const float tangentSpeed = (secondTangent - firstTangent).dot(tangent);
-		const float firstFrictionLever = armFirst.cross(tangent);
-		const float secondFrictionLever = armSecond.cross(tangent);
-		const float tangentMass = first.inverseMass + second.inverseMass
-			+ first.inverseInertia * firstFrictionLever * firstFrictionLever
-			+ second.inverseInertia * secondFrictionLever * secondFrictionLever;
-		if (tangentMass <= 0.0f)
-			return;
-
-		const float limit = ContactFriction * impulse;
-		const float frictionImpulse = std::clamp(-tangentSpeed / tangentMass, -limit, limit);
-		const olc::vf2d scrape = tangent * frictionImpulse;
-		first.velocity -= scrape * first.inverseMass;
-		second.velocity += scrape * second.inverseMass;
-		first.angularVelocity -= first.inverseInertia * armFirst.cross(scrape);
-		second.angularVelocity += second.inverseInertia * armSecond.cross(scrape);
+	inline int RagdollGroup(PhysicsWorld& physics, const void* key) {
+		for (const PhysicsRig& rig : physics.rigs)
+			if (rig.key == key)
+				return rig.group;
+		physics.rigs.push_back(PhysicsRig{});
+		PhysicsRig& rig = physics.rigs.back();
+		rig.key = key;
+		rig.group = -static_cast<int>(physics.rigs.size());
+		rig.bodies.fill(b2_nullBodyId);
+		rig.joints.fill(b2_nullJointId);
+		rig.grips.fill(b2_nullJointId);
+		return rig.group;
 	}
-
-	inline void CorrectContact(ObjectState& first, ObjectState& second, const Contact& contact) {
-		const float inverseMass = first.inverseMass + second.inverseMass;
-		if (inverseMass <= 0.0f)
-			return;
-		const float correction = std::max(contact.depth - ContactSlop, 0.0f) * ContactCorrection / inverseMass;
-		const olc::vf2d normal = SnapContactNormal(contact.normal);
-		first.position -= normal * (correction * first.inverseMass);
-		second.position += normal * (correction * second.inverseMass);
-	}
-
-
-	inline void ResolveShapePair(ObjectState& first, ObjectState& second) {
-		Contact contacts[MaxContacts];
-		int count = 0;
-
-		if (first.shape == Shape::Circle && second.shape == Shape::Circle) {
-			if (!CircleCircleContact(first, second, contacts[0]))
-				return;
-			count = 1;
-		}
-		else if (first.shape == Shape::Polygon && second.shape == Shape::Polygon) {
-			olc::vf2d normal;
-			float depth = 0.0f;
-			if (!PolygonPenetration(first, second, normal, depth))
-				return;
-			count = PolygonContacts(first, second, normal, depth, contacts);
-		}
-		else if (first.shape == Shape::Circle) {
-			if (!CirclePolygonContact(first, second, contacts[0]))
-				return;
-			count = 1;
-		}
-		else {
-			if (!CirclePolygonContact(second, first, contacts[0]))
-				return;
-			contacts[0].normal = -contacts[0].normal;
-			count = 1;
-		}
-		if (count <= 0)
-			return;
-
-		if (first.sleeping && !second.sleeping && second.velocity.mag() > WakeSpeed)
-			Wake(first);
-		if (second.sleeping && !first.sleeping && first.velocity.mag() > WakeSpeed)
-			Wake(second);
-
-		for (int pass = 0; pass < 2; ++pass)
-			for (int index = 0; index < count; ++index)
-				ApplyContact(first, second, contacts[index]);
-
-		int deepest = 0;
-		for (int index = 1; index < count; ++index)
-			if (contacts[index].depth > contacts[deepest].depth)
-				deepest = index;
-		CorrectContact(first, second, contacts[deepest]);
-
-		const olc::vf2d normal = contacts[deepest].normal;
-		if (normal.y > 0.5f && (second.inverseMass <= 0.0f || second.supported))
-			first.supported = true;
-		if (normal.y < -0.5f && (first.inverseMass <= 0.0f || first.supported))
-			second.supported = true;
-	}
-
-
-	inline void IntegrateRotation(ObjectState& body, float step) {
-		if (body.inverseInertia <= 0.0f)
-			return;
-		const float damping = body.grounded ? AngularDamping + GroundedSpinDamping : AngularDamping;
-		body.angularVelocity -= body.angularVelocity * std::min(1.0f, damping * step);
-		body.angularVelocity = std::clamp(body.angularVelocity, -MaxAngularSpeed, MaxAngularSpeed);
-		body.angle = std::remainder(body.angle + body.angularVelocity * step, TwoPi);
-	}
-
-
 }

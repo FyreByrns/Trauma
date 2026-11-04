@@ -23,13 +23,35 @@ namespace Trauma {
 		return terrain;
 	}
 
-
 	inline const std::array<Terrain, 1>& TestLadders() {
 		static const std::array<Terrain, 1> ladders = {{{{-218.0f, -30.0f}, {16.0f, 180.0f}}}};
 		return ladders;
 	}
 
 	constexpr float DropClearance = 2.0f;
+
+	inline ObjectState StaticTerrain(const Terrain& terrain) {
+		const olc::vf2d half = terrain.size * 0.5f;
+		return CreatePolygon(terrain.middle(), {
+			{ -half.x, -half.y }, { half.x, -half.y },
+			{ half.x, half.y }, { -half.x, half.y } }, 0.0f);
+	}
+
+	inline void CreateTerrainBodies(PhysicsWorld& physics) {
+		for (const b2BodyId body : physics.terrain)
+			if (b2Body_IsValid(body))
+				b2DestroyBody(body);
+		physics.terrain.clear();
+
+		for (const Terrain& terrain : TestTerrain()) {
+			const ObjectState body = StaticTerrain(terrain);
+			physics.terrain.push_back(BuildBody(physics, body));
+		}
+	}
+
+	inline b2BodyId TerrainBody(PhysicsWorld& physics, size_t index) {
+		return index < physics.terrain.size() ? physics.terrain[index] : b2_nullBodyId;
+	}
 
 	inline float SegmentBodyFraction(const olc::vf2d& start, const olc::vf2d& end,
 		const ObjectState& body) {
@@ -112,33 +134,4 @@ namespace Trauma {
 		bodies[5] = CreatePolygon({ -285.0f, -10.0f }, hexagon, 0.6f, 0.35f);
 		return bodies;
 	}
-
-	inline ObjectState StaticTerrain(const Terrain& terrain) {
-		const olc::vf2d half = terrain.size * 0.5f;
-		return CreatePolygon(terrain.middle(), {
-			{ -half.x, -half.y }, { half.x, -half.y },
-			{ half.x, half.y }, { -half.x, half.y } }, 0.0f);
-	}
-
-	inline const std::array<ObjectState, 5>& StaticTerrainBodies() {
-		static const std::array<ObjectState, 5> bodies = [] {
-			std::array<ObjectState, 5> built;
-			for (size_t i = 0; i < built.size(); ++i)
-				built[i] = StaticTerrain(TestTerrain()[i]);
-			return built;
-		}();
-		return bodies;
-	}
-
-	inline void ResolveTerrain(ObjectState& object, size_t terrainIndex) {
-		const Terrain& terrain = TestTerrain()[terrainIndex];
-		if (object.position.x + object.radius < terrain.pos.x
-			|| object.position.x - object.radius > terrain.pos.x + terrain.size.x
-			|| object.position.y + object.radius < terrain.pos.y
-			|| object.position.y - object.radius > terrain.pos.y + terrain.size.y)
-			return;
-		ObjectState ground = StaticTerrainBodies()[terrainIndex];
-		ResolveShapePair(ground, object);
-	}
-
 }

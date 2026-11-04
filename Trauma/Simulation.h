@@ -11,9 +11,11 @@
 
 namespace Trauma {
 	constexpr int MaxPlayers = 20;
+	constexpr int SolverSubSteps = 4;
 
-	inline void ApplyRagdollInput(RagdollState& ragdoll, const InputState& input) {
+	inline void ApplyRagdollInput(PhysicsWorld& physics, RagdollState& ragdoll, const InputState& input) {
 		ragdoll.input = input;
+		const int group = RagdollGroup(physics, &ragdoll);
 		if (input.hotbar < HotbarSlots)
 			ragdoll.inventory.selected = input.hotbar;
 		ragdoll.ladderDetachTime = std::max(0.0f, ragdoll.ladderDetachTime - FixedDeltaTime);
@@ -22,8 +24,10 @@ namespace Trauma {
 			ragdoll.ladder = 0;
 			ragdoll.ladderDetachTime = 0.3f;
 			if (input.jump)
-				for (ObjectState& part : ragdoll.parts)
-					part.velocity.y = -JumpSpeed;
+				for (size_t i = 0; i < PartCount; ++i) {
+					const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
+					b2Body_SetLinearVelocity(body, { 0.0f, -JumpSpeed });
+				}
 		}
 		if (!ragdoll.ladder && ragdoll.ladderDetachTime == 0.0f && std::abs(input.climb) > 0.01f
 			&& std::abs(input.moveX) <= 0.01f && !input.jump) {
@@ -45,11 +49,13 @@ namespace Trauma {
 			if ((position.y <= ladder.pos.y + 22.0f && speedY < 0.0f)
 				|| (position.y >= ladder.pos.y + ladder.size.y - 35.0f && speedY > 0.0f))
 				speedY = 0.0f;
-			const olc::vf2d change = olc::vf2d{speedX, speedY} - ragdoll.parts[Torso].velocity;
-			for (ObjectState& part : ragdoll.parts)
-				part.velocity += change;
+			for (size_t i = 0; i < PartCount; ++i) {
+				const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
+				b2Body_SetLinearVelocity(body, { speedX, speedY });
+			}
 			return;
 		}
+
 		const MovementState movement = GetMovementState(input);
 		const bool grounded = ragdoll.parts[LeftFoot].grounded || ragdoll.parts[RightFoot].grounded
 			|| (movement == MovementState::Crawling && (ragdoll.parts[Torso].grounded || ragdoll.parts[Hips].grounded
@@ -64,114 +70,53 @@ namespace Trauma {
 		else if ((input.reachLeft || input.reachRight) && std::abs(input.aim.x) > 0.01f) {
 			ragdoll.facing = input.aim.x > 0.0f ? 1.0f : -1.0f;
 		}
+
+		const b2BodyId torso = EnsureBody(physics, ragdoll.parts[Torso], group);
+		const float torsoSpeed = b2Body_GetLinearVelocity(torso).x;
 		const float targetSpeed = std::clamp(input.moveX, -1.0f, 1.0f) * MovementSpeed(movement);
-		const float change = std::clamp(targetSpeed - ragdoll.parts[Torso].velocity.x, -30.0f, 30.0f);
-		for (ObjectState& part : ragdoll.parts)
-			part.velocity.x += change;
-		if (input.jump && grounded)
-			for (ObjectState& part : ragdoll.parts)
-				part.velocity.y = std::min(part.velocity.y, -JumpSpeed);
+		const float change = std::clamp(targetSpeed - torsoSpeed, -30.0f, 30.0f);
+		for (size_t i = 0; i < PartCount; ++i) {
+			const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
+			b2Vec2 velocity = b2Body_GetLinearVelocity(body);
+			velocity.x += change;
+			if (input.jump && grounded)
+				velocity.y = std::min(velocity.y, -JumpSpeed);
+			b2Body_SetLinearVelocity(body, velocity);
+		}
 	}
 
-
-	inline void StepPhysics(const std::vector<RagdollState*>& ragdolls,
+	inline void StepPhysics(PhysicsWorld& physics, const std::vector<RagdollState*>& ragdolls,
 		const std::vector<ObjectState*>& objects, float deltaTime) {
-		constexpr int Substeps = 4;
-		constexpr int SolverIterations = 12;
-		const float step = deltaTime / Substeps;
-		std::vector<ObjectState*> bodies;
-		std::vector<size_t> owners;
-		for (size_t i = 0; i < ragdolls.size(); ++i)
-			for (ObjectState& part : ragdolls[i]->parts) {
-				bodies.push_back(&part);
-				owners.push_back(i);
-			}
-		for (ObjectState* object : objects) {
-			bodies.push_back(object);
-			owners.push_back(ragdolls.size() + owners.size());
+		if (!b2World_IsValid(physics.world))
+			ResetWorld(physics);
+
+		for (RagdollState* ragdoll : ragdolls)
+			EnsureRig(physics, *ragdoll);
+		for (ObjectState* object : objects)
+			EnsureBody(physics, *object);
+
+		for (RagdollState* ragdoll : ragdolls) {
+			for (size_t arm = 0; arm < ragdoll->grips.size(); ++arm)
+				ResolveHandGrip(*ragdoll, arm, objects);
 		}
-		for (ObjectState* body : bodies)
-			body->grounded = false;
 
-		for (int substep = 0; substep < Substeps; ++substep) {
-			for (ObjectState* body : bodies)
-				body->supported = false;
-			for (RagdollState* ragdoll : ragdolls)
-				for (size_t arm = 0; arm < ragdoll->grips.size(); ++arm)
-					ResolveHandGrip(*ragdoll, arm, objects);
-			for (RagdollState* ragdoll : ragdolls)
-				DriveRagdoll(*ragdoll, step);
-			for (size_t i = 0; i < bodies.size(); ++i) {
-				ObjectState* body = bodies[i];
-				if (body->inverseMass <= 0.0f || body->sleeping)
-					continue;
-				if (owners[i] >= ragdolls.size() || !ragdolls[owners[i]]->ladder)
-					body->velocity.y += Gravity * step;
-				body->position += body->velocity * step;
-				IntegrateRotation(*body, step);
-			}
-			for (int iteration = 0; iteration < SolverIterations; ++iteration) {
-				for (RagdollState* ragdoll : ragdolls) {
-					StabilizeRagdoll(*ragdoll);
-					for (const RagdollJoint& joint : RagdollJoints())
-						ResolveJoint(ragdoll->parts[joint.first], ragdoll->parts[joint.second], joint.length);
-					ResolveRagdollBendLimits(*ragdoll);
-				}
-				for (ObjectState* body : bodies)
-					if (body->inverseMass > 0.0f)
-						for (size_t i = 0; i < TestTerrain().size(); ++i)
-							ResolveTerrain(*body, i);
-				for (size_t first = 0; first < bodies.size(); ++first)
-					for (size_t second = first + 1; second < bodies.size(); ++second) {
-						if (owners[first] == owners[second])
-							continue;
-						const ObjectState& a = *bodies[first];
-						const ObjectState& b = *bodies[second];
-						if ((a.position - b.position).mag() > a.radius + b.radius + ContactMargin)
-							continue;
-						ResolveShapePair(*bodies[first], *bodies[second]);
-					}
-				for (RagdollState* ragdoll : ragdolls)
-					for (size_t arm = 0; arm < ragdoll->grips.size(); ++arm)
-						ResolveHandGrip(*ragdoll, arm, objects);
-			}
+		for (RagdollState* ragdoll : ragdolls)
+			DriveRagdoll(physics, *ragdoll);
+		for (RagdollState* ragdoll : ragdolls)
+			SyncGripJoints(physics, *ragdoll, objects);
 
-			for (ObjectState* body : bodies)
-				if (body->inverseMass > 0.0f)
-					for (size_t i = 0; i < TestTerrain().size(); ++i)
-						ResolveTerrain(*body, i);
+		b2World_Step(physics.world, deltaTime, SolverSubSteps);
 
-			for (ObjectState* body : bodies)
-				body->grounded = body->grounded || body->supported;
+		for (RagdollState* ragdoll : ragdolls)
+			for (size_t i = 0; i < PartCount; ++i)
+				SyncBody(ragdoll->parts[i],
+					EnsureBody(physics, ragdoll->parts[i], RagdollGroup(physics, ragdoll)));
+		for (ObjectState* object : objects)
+			SyncBody(*object, EnsureBody(physics, *object));
 
-			for (ObjectState* object : objects)
-				UpdateSleep(*object, step);
-			for (RagdollState* ragdoll : ragdolls)
-				HoldGroundedFooting(*ragdoll);
-			for (RagdollState* ragdoll : ragdolls) {
-				if (ragdoll->ladder || std::abs(ragdoll->input.moveX) > 0.01f)
-					continue;
-				for (const RagdollPart foot : { LeftFoot, RightFoot }) {
-					const ObjectState& part = ragdoll->parts[foot];
-					if (!part.grounded)
-						continue;
-					for (ObjectState* object : objects) {
-						if (object->inverseMass <= 0.0f || object->sleeping)
-							continue;
-						if ((part.position - object->position).mag() > part.radius + object->radius + 1.0f)
-							continue;
-						object->velocity.x = 0.0f;
-						object->angularVelocity *= RestDamping;
-					}
-				}
-			}
-			for (ObjectState* body : bodies) {
-				if (!body->grounded || body->velocity.mag() >= RestSpeed)
-					continue;
-				body->velocity *= RestDamping;
-				body->angularVelocity *= RestDamping;
-			}
-		}
+		for (RagdollState* ragdoll : ragdolls)
+			HoldGroundedFooting(physics, *ragdoll);
+
+		PruneBodies(physics);
 	}
-
 }

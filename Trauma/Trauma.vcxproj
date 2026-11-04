@@ -74,9 +74,11 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)BOX2D_DISABLE_SIMD;</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <AdditionalIncludeDirectories>third_party/box2d/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -89,9 +91,11 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)BOX2D_DISABLE_SIMD;</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <AdditionalIncludeDirectories>third_party/box2d/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -102,9 +106,11 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)BOX2D_DISABLE_SIMD;</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <AdditionalIncludeDirectories>third_party/box2d/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -117,9 +123,11 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)BOX2D_DISABLE_SIMD;</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <AdditionalIncludeDirectories>third_party/box2d/include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -159,6 +167,51 @@
     <ClInclude Include="olcPixelGameEngine3.h" />
     <ClInclude Include="olcUTIL3_Camera2D.h" />
     <ClInclude Include="olcUTIL3_Geometry2D.h" />
+  </ItemGroup>
+  <ItemGroup Label="Box2D">
+    <ClCompile Include="third_party\box2d\src\aabb.c" />
+    <ClCompile Include="third_party\box2d\src\arena_allocator.c" />
+    <ClCompile Include="third_party\box2d\src\bitset.c" />
+    <ClCompile Include="third_party\box2d\src\body.c" />
+    <ClCompile Include="third_party\box2d\src\broad_phase.c" />
+    <ClCompile Include="third_party\box2d\src\constraint_graph.c" />
+    <ClCompile Include="third_party\box2d\src\contact.c" />
+    <ClCompile Include="third_party\box2d\src\contact_solver.c" />
+    <ClCompile Include="third_party\box2d\src\contact_solver_w4.c" />
+    <ClCompile Include="third_party\box2d\src\contact_solver_w8.c" />
+    <ClCompile Include="third_party\box2d\src\core.c" />
+    <ClCompile Include="third_party\box2d\src\distance.c" />
+    <ClCompile Include="third_party\box2d\src\distance_joint.c" />
+    <ClCompile Include="third_party\box2d\src\dynamic_tree.c" />
+    <ClCompile Include="third_party\box2d\src\geometry.c" />
+    <ClCompile Include="third_party\box2d\src\hull.c" />
+    <ClCompile Include="third_party\box2d\src\id_pool.c" />
+    <ClCompile Include="third_party\box2d\src\island.c" />
+    <ClCompile Include="third_party\box2d\src\joint.c" />
+    <ClCompile Include="third_party\box2d\src\manifold.c" />
+    <ClCompile Include="third_party\box2d\src\math_functions.c" />
+    <ClCompile Include="third_party\box2d\src\motor_joint.c" />
+    <ClCompile Include="third_party\box2d\src\mover.c" />
+    <ClCompile Include="third_party\box2d\src\mover_joint.c" />
+    <ClCompile Include="third_party\box2d\src\parallel_for.c" />
+    <ClCompile Include="third_party\box2d\src\physics_world.c" />
+    <ClCompile Include="third_party\box2d\src\pogo_joint.c" />
+    <ClCompile Include="third_party\box2d\src\prismatic_joint.c" />
+    <ClCompile Include="third_party\box2d\src\recording.c" />
+    <ClCompile Include="third_party\box2d\src\replay.c" />
+    <ClCompile Include="third_party\box2d\src\revolute_joint.c" />
+    <ClCompile Include="third_party\box2d\src\scheduler.c" />
+    <ClCompile Include="third_party\box2d\src\sensor.c" />
+    <ClCompile Include="third_party\box2d\src\shape.c" />
+    <ClCompile Include="third_party\box2d\src\simd.c" />
+    <ClCompile Include="third_party\box2d\src\snapshot.c" />
+    <ClCompile Include="third_party\box2d\src\solver.c" />
+    <ClCompile Include="third_party\box2d\src\solver_set.c" />
+    <ClCompile Include="third_party\box2d\src\table.c" />
+    <ClCompile Include="third_party\box2d\src\timer.c" />
+    <ClCompile Include="third_party\box2d\src\types.c" />
+    <ClCompile Include="third_party\box2d\src\weld_joint.c" />
+    <ClCompile Include="third_party\box2d\src\wheel_joint.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

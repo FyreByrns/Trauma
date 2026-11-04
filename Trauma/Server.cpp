@@ -47,6 +47,8 @@ namespace Trauma {
 
 		for (ClientSlot& client : clients)
 			client = ClientSlot{};
+		ResetWorld(physics);
+		CreateTerrainBodies(physics);
 		bodies = CreateTestBodies();
 		for (size_t index = 0; index < items.size(); ++index) {
 			items[index] = DeadItemBody();
@@ -148,7 +150,7 @@ namespace Trauma {
 			if (!client.bActive)
 				continue;
 
-			ApplyRagdollInput(client.player, SelectInput(client));
+			ApplyRagdollInput(physics, client.player, SelectInput(client));
 			ragdolls.push_back(&client.player);
 		}
 		for (ObjectState& body : bodies)
@@ -156,7 +158,7 @@ namespace Trauma {
 		for (ObjectState& item : items)
 			activeBodies.push_back(&item);
 
-		StepPhysics(ragdolls, activeBodies, FixedDeltaTime);
+		StepPhysics(physics, ragdolls, activeBodies, FixedDeltaTime);
 		++tick;
 	}
 

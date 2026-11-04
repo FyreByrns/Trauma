@@ -98,6 +98,7 @@ namespace Trauma {
 
 	private:
 		Net::Socket socket;
+	PhysicsWorld physics;
 		Net::Endpoint server;
 		Status status = Status::Disconnected;
 		uint8_t playerId = 0;

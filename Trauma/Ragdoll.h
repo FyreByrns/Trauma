@@ -11,11 +11,7 @@
 #include <vector>
 
 namespace Trauma {
-	constexpr float GripSpringStiffness = 14.0f;
-	constexpr float GripSpringDamping = 0.5f;
-	constexpr float GripMaxSpringSpeed = 25.0f;
 	constexpr float FootingSlipLimit = 2.0f;
-
 	constexpr float LimbDriveStiffness = 180.0f;
 	constexpr float LimbDriveDamping = 24.0f;
 	constexpr float LimbDriveMaxAcceleration = 5000.0f;
@@ -30,7 +26,6 @@ namespace Trauma {
 		olc::vf2d anchor;
 		float angleOffset = 0.0f;
 	};
-
 
 	struct RagdollState {
 		std::array<ObjectState, PartCount> parts;
@@ -84,7 +79,6 @@ namespace Trauma {
 		ragdoll.inventory = CreateInventory();
 		return ragdoll;
 	}
-
 
 	inline std::array<olc::vf2d, PartCount> RagdollTargets(const RagdollState& ragdoll) {
 		const olc::vf2d torso = ragdoll.parts[Torso].position;
@@ -171,90 +165,118 @@ namespace Trauma {
 		return targets;
 	}
 
-	inline void DriveRagdoll(RagdollState& ragdoll, float deltaTime) {
+	inline bool SameBody(b2BodyId first, b2BodyId second) {
+		return first.index1 == second.index1 && first.world0 == second.world0
+			&& first.generation == second.generation;
+	}
+
+	inline b2JointId CreateRevoluteJoint(PhysicsWorld& physics, b2BodyId first, b2BodyId second,
+		const olc::vf2d& anchor) {
+		b2RevoluteJointDef def = b2DefaultRevoluteJointDef();
+		def.base.bodyIdA = first;
+		def.base.bodyIdB = second;
+		const b2Transform firstTransform = b2Body_GetTransform(first);
+		const b2Transform secondTransform = b2Body_GetTransform(second);
+		def.base.localFrameA.p = { anchor.x - firstTransform.p.x, anchor.y - firstTransform.p.y };
+		def.base.localFrameA.q = b2MakeRot(0.0f);
+		def.base.localFrameB.p = { anchor.x - secondTransform.p.x, anchor.y - secondTransform.p.y };
+		def.base.localFrameB.q = b2MakeRot(0.0f);
+		def.base.collideConnected = false;
+		def.base.constraintHertz = 0.0f;
+		def.base.constraintDampingRatio = 1.0f;
+		def.enableMotor = false;
+		def.enableLimit = false;
+		return b2CreateRevoluteJoint(physics.world, &def);
+	}
+
+	inline b2JointId CreateWeldJoint(PhysicsWorld& physics, b2BodyId first, b2BodyId second,
+		const olc::vf2d& anchor) {
+		b2WeldJointDef def = b2DefaultWeldJointDef();
+		def.base.bodyIdA = first;
+		def.base.bodyIdB = second;
+		const b2Transform firstTransform = b2Body_GetTransform(first);
+		const b2Transform secondTransform = b2Body_GetTransform(second);
+		def.base.localFrameA.p = { anchor.x - firstTransform.p.x, anchor.y - firstTransform.p.y };
+		def.base.localFrameA.q = b2MakeRot(0.0f);
+		def.base.localFrameB.p = { anchor.x - secondTransform.p.x, anchor.y - secondTransform.p.y };
+		def.base.localFrameB.q = b2MakeRot(0.0f);
+		def.base.collideConnected = false;
+		def.base.constraintHertz = 0.0f;
+		def.base.constraintDampingRatio = 1.0f;
+		def.linearHertz = 0.0f;
+		def.angularHertz = 0.0f;
+		def.linearDampingRatio = 1.0f;
+		def.angularDampingRatio = 1.0f;
+		return b2CreateWeldJoint(physics.world, &def);
+	}
+
+	inline PhysicsRig& EnsureRig(PhysicsWorld& physics, const RagdollState& ragdoll) {
+		RagdollGroup(physics, &ragdoll);
+		PhysicsRig* rig = nullptr;
+		for (PhysicsRig& candidate : physics.rigs)
+			if (candidate.key == &ragdoll) {
+				rig = &candidate;
+				break;
+			}
+		rig->seen = true;
+
+		bool rebuilt = false;
+		for (size_t i = 0; i < PartCount; ++i) {
+			const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], rig->group);
+			if (!b2Body_IsValid(rig->bodies[i]) || !SameBody(rig->bodies[i], body)) {
+				rig->bodies[i] = body;
+				rebuilt = true;
+			}
+		}
+
+		if (!rebuilt && b2Joint_IsValid(rig->joints[0]))
+			return *rig;
+
+		for (b2JointId& grip : rig->grips) {
+			if (b2Joint_IsValid(grip))
+				b2DestroyJoint(grip);
+			grip = b2_nullJointId;
+		}
+		rig->gripTargets = {};
+
+		const auto& joints = RagdollJoints();
+		for (size_t j = 0; j < joints.size(); ++j) {
+			if (b2Joint_IsValid(rig->joints[j]))
+				b2DestroyJoint(rig->joints[j]);
+			rig->joints[j] = CreateRevoluteJoint(physics, rig->bodies[joints[j].first],
+				rig->bodies[joints[j].second],
+				(ragdoll.parts[joints[j].first].position + ragdoll.parts[joints[j].second].position) * 0.5f);
+		}
+		return *rig;
+	}
+
+	inline void DriveRagdoll(PhysicsWorld& physics, RagdollState& ragdoll) {
 		const auto targets = RagdollTargets(ragdoll);
-		ObjectState& torsoPart = ragdoll.parts[Torso];
-		const olc::vf2d torsoVelocity = torsoPart.velocity;
+		PhysicsRig& rig = EnsureRig(physics, ragdoll);
+		const olc::vf2d torsoVelocity = ragdoll.parts[Torso].velocity;
+		const float torsoInverseMass = ragdoll.parts[Torso].inverseMass;
 		olc::vf2d reaction;
 		for (size_t i = 1; i < PartCount; ++i) {
-			ObjectState& part = ragdoll.parts[i];
-			olc::vf2d acceleration = (targets[i] - part.position) * LimbDriveStiffness - (part.velocity - torsoVelocity) * LimbDriveDamping;
+			const b2BodyId body = rig.bodies[i];
+			if (!b2Body_IsValid(body) || ragdoll.parts[i].inverseMass <= 0.0f)
+				continue;
+			const ObjectState& part = ragdoll.parts[i];
+			olc::vf2d acceleration = (targets[i] - part.position) * LimbDriveStiffness
+				- (part.velocity - torsoVelocity) * LimbDriveDamping;
 			const float magnitude = acceleration.mag();
 			if (magnitude > LimbDriveMaxAcceleration)
 				acceleration *= LimbDriveMaxAcceleration / magnitude;
-			part.velocity += acceleration * deltaTime;
-			reaction -= acceleration * (torsoPart.inverseMass / part.inverseMass);
+			const float mass = 1.0f / part.inverseMass;
+			b2Body_ApplyForceToCenter(body, { acceleration.x * mass, acceleration.y * mass }, true);
+			reaction -= acceleration * (torsoInverseMass / part.inverseMass);
 		}
-		torsoPart.velocity += reaction * deltaTime;
-	}
-
-
-	inline void StabilizeRagdoll(RagdollState& ragdoll) {
-		const auto targets = RagdollTargets(ragdoll);
-		ObjectState& torso = ragdoll.parts[Torso];
-		for (size_t i = 1; i < PartCount; ++i) {
-			ObjectState& part = ragdoll.parts[i];
-			const float mass = torso.inverseMass + part.inverseMass;
-			if (mass <= 0.0f)
-				continue;
-			const olc::vf2d correction = (targets[i] - part.position) * (0.2f / mass);
-			part.position += correction * part.inverseMass;
-			torso.position -= correction * torso.inverseMass;
+		const b2BodyId torsoBody = rig.bodies[Torso];
+		if (b2Body_IsValid(torsoBody) && torsoInverseMass > 0.0f) {
+			const float mass = 1.0f / torsoInverseMass;
+			b2Body_ApplyForceToCenter(torsoBody, { reaction.x * mass, reaction.y * mass }, true);
 		}
 	}
 
-	inline void ResolveJoint(ObjectState& first, ObjectState& second, float length) {
-		const olc::vf2d offset = second.position - first.position;
-		const float distance = offset.mag();
-		const float mass = first.inverseMass + second.inverseMass;
-		if (distance < 0.0001f || mass <= 0.0f)
-			return;
-		const olc::vf2d normal = offset / distance;
-		const olc::vf2d correction = normal * ((distance - length) / mass);
-		first.position += correction * first.inverseMass;
-		second.position -= correction * second.inverseMass;
-		const float speed = (second.velocity - first.velocity).dot(normal) / mass;
-		first.velocity += normal * (speed * first.inverseMass);
-		second.velocity -= normal * (speed * second.inverseMass);
-	}
-
-	inline void ResolveBendLimit(ObjectState& root, ObjectState& joint, ObjectState& end, float bendSign) {
-		const olc::vf2d axis = end.position - root.position;
-		const float length = axis.mag();
-		if (length < 0.0001f)
-			return;
-		const olc::vf2d direction = axis / length;
-		const olc::vf2d normal = direction.perp() * bendSign;
-		const float t = std::clamp((joint.position - root.position).dot(direction) / length, 0.0f, 1.0f);
-		const float distance = (joint.position - root.position).dot(normal);
-		const float mass = joint.inverseMass + root.inverseMass * (1.0f - t) * (1.0f - t)
-			+ end.inverseMass * t * t;
-		if (distance >= 0.0f || mass <= 0.0f)
-			return;
-		const float correction = -distance / mass;
-		joint.position += normal * (correction * joint.inverseMass);
-		root.position -= normal * (correction * root.inverseMass * (1.0f - t));
-		end.position -= normal * (correction * end.inverseMass * t);
-		const float speed = (joint.velocity - root.velocity * (1.0f - t) - end.velocity * t).dot(normal);
-		if (speed < 0.0f) {
-			const float impulse = -speed / mass;
-			joint.velocity += normal * (impulse * joint.inverseMass);
-			root.velocity -= normal * (impulse * root.inverseMass * (1.0f - t));
-			end.velocity -= normal * (impulse * end.inverseMass * t);
-		}
-	}
-
-	inline void ResolveRagdollBendLimits(RagdollState& ragdoll) {
-		ResolveBendLimit(ragdoll.parts[Torso], ragdoll.parts[LeftElbow], ragdoll.parts[LeftHand], ragdoll.facing);
-		ResolveBendLimit(ragdoll.parts[Torso], ragdoll.parts[RightElbow], ragdoll.parts[RightHand], ragdoll.facing);
-		ResolveBendLimit(ragdoll.parts[Hips], ragdoll.parts[LeftKnee], ragdoll.parts[LeftFoot], -ragdoll.facing);
-		ResolveBendLimit(ragdoll.parts[Hips], ragdoll.parts[RightKnee], ragdoll.parts[RightFoot], -ragdoll.facing);
-	}
-
-	inline bool AimingAtContact(const olc::vf2d& aim, const olc::vf2d& outwardNormal) {
-		const float length = aim.mag();
-		return length > 0.0001f && aim.dot(outwardNormal) < -0.25f * length;
-	}
 
 	inline olc::vf2d ClosestOnObject(const ObjectState& object, const olc::vf2d& position) {
 		if (object.shape != Shape::Polygon) {
@@ -312,86 +334,85 @@ namespace Trauma {
 		return std::atan2(direction.y, direction.x);
 	}
 
+	inline bool AimingAtContact(const olc::vf2d& aim, const olc::vf2d& outwardNormal) {
+		const float length = aim.mag();
+		return length > 0.0001f && aim.dot(outwardNormal) < -0.25f * length;
+	}
+
 	inline void ResolveHandGrip(RagdollState& ragdoll, size_t arm, const std::vector<ObjectState*>& objects) {
 		HandGrip& grip = ragdoll.grips[arm];
 		ObjectState& hand = ragdoll.parts[arm == 0 ? LeftHand : RightHand];
 		hand.angle = HandFacingAngle(ragdoll, arm);
-		if (!(arm == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight)) {
+		if (!(arm == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight) || !ragdoll.input.grab) {
 			grip = {};
 			return;
 		}
-
-		if (!ragdoll.input.grab) {
-			grip = {};
+		if (grip.target != 0)
 			return;
-		}
 
 		const auto& terrain = TestTerrain();
-		if (grip.target == 0) {
-			for (size_t i = 0; i < terrain.size(); ++i) {
-				const olc::vf2d closest = olc::utils::geom2d::closest(terrain[i], hand.position);
-				ObjectState contact = hand;
-				ResolveTerrain(contact, i);
-				const olc::vf2d offset = contact.position - closest;
-				const float distance = offset.mag();
-				if ((hand.position - closest).mag() <= hand.radius + 0.5f && distance > 0.0001f
-					&& AimingAtContact(ragdoll.input.aim, offset / distance)) {
-					grip.target = static_cast<uint8_t>(i + 1);
-					grip.anchor = contact.position;
-					break;
-				}
-			}
-			for (size_t i = 0; grip.target == 0 && i < objects.size(); ++i) {
-				const olc::vf2d closest = ClosestOnObject(*objects[i], hand.position);
-				const olc::vf2d offset = hand.position - closest;
-				const float distance = offset.mag();
-				if (distance > hand.radius + 0.5f)
-					continue;
-				const olc::vf2d normal = distance > 0.0001f ? offset / distance : olc::vf2d{0.0f, -1.0f};
-				if (!AimingAtContact(ragdoll.input.aim, normal))
-					continue;
-				grip.target = static_cast<uint8_t>(terrain.size() + i + 1);
-				grip.anchor = Rotate(hand.position - objects[i]->position, -objects[i]->angle);
-				grip.angleOffset = std::remainder(objects[i]->angle - hand.angle, TwoPi);
-			}
+		for (size_t i = 0; i < terrain.size(); ++i) {
+			const olc::vf2d closest = olc::utils::geom2d::closest(terrain[i], hand.position);
+			const olc::vf2d offset = hand.position - closest;
+			const float distance = offset.mag();
+			if (distance > hand.radius + 0.5f || distance < 0.0001f)
+				continue;
+			if (!AimingAtContact(ragdoll.input.aim, offset / distance))
+				continue;
+			grip.target = static_cast<uint8_t>(i + 1);
+			grip.anchor = closest;
+			break;
 		}
-		if (grip.target == 0)
-			return;
-		if (grip.target <= terrain.size()) {
-			hand.position = grip.anchor;
-			hand.velocity = {0.0f, 0.0f};
-			return;
+		for (size_t i = 0; grip.target == 0 && i < objects.size(); ++i) {
+			const olc::vf2d closest = ClosestOnObject(*objects[i], hand.position);
+			const olc::vf2d offset = hand.position - closest;
+			const float distance = offset.mag();
+			if (distance > hand.radius + 0.5f)
+				continue;
+			const olc::vf2d normal = distance > 0.0001f ? offset / distance : olc::vf2d{0.0f, -1.0f};
+			if (!AimingAtContact(ragdoll.input.aim, normal))
+				continue;
+			grip.target = static_cast<uint8_t>(terrain.size() + i + 1);
+			grip.anchor = Rotate(hand.position - objects[i]->position, -objects[i]->angle);
+			grip.angleOffset = std::remainder(objects[i]->angle - hand.angle, TwoPi);
 		}
-		const size_t objectIndex = grip.target - terrain.size() - 1;
-		if (objectIndex >= objects.size()) {
-			grip = {};
-			return;
-		}
-		ObjectState& object = *objects[objectIndex];
-		Wake(object);
-		const float mass = hand.inverseMass + object.inverseMass;
-		if (mass <= 0.0f)
-			return;
-		const olc::vf2d anchor = object.position + Rotate(grip.anchor, object.angle);
-		const olc::vf2d correction = (anchor - hand.position) / mass;
-		hand.position += correction * hand.inverseMass;
-		object.position -= correction * object.inverseMass;
-		const olc::vf2d impulse = (object.velocity - hand.velocity) / mass;
-		hand.velocity += impulse * hand.inverseMass;
-		object.velocity -= impulse * object.inverseMass;
-
-		const float angularMass = hand.inverseInertia + object.inverseInertia;
-		if (angularMass <= 0.0f)
-			return;
-		const float error = std::remainder(hand.angle + grip.angleOffset - object.angle, TwoPi);
-		const float relativeSpin = object.angularVelocity - hand.angularVelocity;
-		const float springSpeed = std::clamp(error * GripSpringStiffness, -GripMaxSpringSpeed, GripMaxSpringSpeed);
-		const float response = (springSpeed - relativeSpin) * GripSpringDamping / angularMass;
-		object.angularVelocity += response * object.inverseInertia;
-		hand.angularVelocity -= response * hand.inverseInertia;
 	}
 
-	inline void HoldGroundedFooting(RagdollState& ragdoll) {
+	inline void SyncGripJoints(PhysicsWorld& physics, RagdollState& ragdoll,
+		const std::vector<ObjectState*>& objects) {
+		PhysicsRig& rig = EnsureRig(physics, ragdoll);
+		const size_t terrainCount = TestTerrain().size();
+		for (size_t arm = 0; arm < ragdoll.grips.size(); ++arm) {
+			const HandGrip& grip = ragdoll.grips[arm];
+			b2BodyId target = b2_nullBodyId;
+			if (grip.target > 0) {
+				if (grip.target <= terrainCount)
+					target = TerrainBody(physics, grip.target - 1);
+				else {
+					const size_t index = grip.target - terrainCount - 1;
+					if (index < objects.size())
+						target = EnsureBody(physics, *objects[index]);
+				}
+			}
+
+			const bool sameTarget = rig.gripTargets[arm] == grip.target;
+			if (sameTarget && b2Joint_IsValid(rig.grips[arm]))
+				continue;
+			if (b2Joint_IsValid(rig.grips[arm]))
+				b2DestroyJoint(rig.grips[arm]);
+			rig.grips[arm] = b2_nullJointId;
+			rig.gripTargets[arm] = grip.target;
+			if (grip.target == 0 || !b2Body_IsValid(target))
+				continue;
+			if (!b2Body_IsValid(rig.bodies[arm == 0 ? LeftHand : RightHand]))
+				continue;
+			rig.grips[arm] = CreateWeldJoint(physics, rig.bodies[arm == 0 ? LeftHand : RightHand],
+				target, ragdoll.parts[arm == 0 ? LeftHand : RightHand].position);
+		}
+	}
+
+	inline void HoldGroundedFooting(PhysicsWorld& physics, RagdollState& ragdoll) {
+		const int group = RagdollGroup(physics, &ragdoll);
 		const bool idle = !ragdoll.ladder && std::abs(ragdoll.input.moveX) <= 0.01f;
 		const bool feet = ragdoll.parts[LeftFoot].grounded || ragdoll.parts[RightFoot].grounded;
 		const bool crawlContact = GetMovementState(ragdoll.input) == MovementState::Crawling
@@ -402,8 +423,12 @@ namespace Trauma {
 			return;
 		}
 
-		for (ObjectState& part : ragdoll.parts)
-			part.velocity.x = 0.0f;
+		for (size_t i = 0; i < PartCount; ++i) {
+			const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
+			b2Vec2 velocity = b2Body_GetLinearVelocity(body);
+			velocity.x = 0.0f;
+			b2Body_SetLinearVelocity(body, velocity);
+		}
 
 		const olc::vf2d torso = ragdoll.parts[Torso].position;
 		if (!ragdoll.footingAnchored) {
@@ -416,9 +441,10 @@ namespace Trauma {
 			ragdoll.footingAnchor = torso;
 			return;
 		}
-		for (ObjectState& part : ragdoll.parts)
-			part.position.x -= slip;
+		for (size_t i = 0; i < PartCount; ++i) {
+			const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
+			const b2Transform transform = b2Body_GetTransform(body);
+			b2Body_SetTransform(body, { transform.p.x - slip, transform.p.y }, transform.q);
+		}
 	}
-
-
 }
