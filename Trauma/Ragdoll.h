@@ -15,7 +15,7 @@ namespace Trauma {
 	constexpr float PoseMaxVelocity = 700.0f;
 	constexpr float PoseMaxForce = 12000.0f;
 
-	constexpr float GripSpringHertz = 5.0f;
+	constexpr float GripSpringHertz = 20.0f;
 	constexpr float GripSpringDamping = 1.0f;
 	constexpr float GripConstraintHertz = 60.0f;
 
@@ -100,38 +100,43 @@ namespace Trauma {
 		}
 
 		if (ragdoll.ladder) {
-			const float phase = std::sin(ragdoll.gaitPhase);
-			const float reach = phase * 2.0f;
+			const Terrain& ladder = TestLadders()[ragdoll.ladder - 1];
+			const float rungX = ladder.pos.x + ladder.size.x * 0.5f;
+			const int rungCount = std::max(1, static_cast<int>(ladder.size.y / LadderRungSpacing));
+			const int base = static_cast<int>(std::floor((torso.y - ladder.pos.y) / LadderRungSpacing));
+			const bool leftStep = std::sin(ragdoll.gaitPhase) >= 0.0f;
 			targets[Head] = torso + olc::vf2d{ 0.0f, -14.0f };
 			targets[Hips] = torso + olc::vf2d{ 0.0f, 12.0f };
-			for (size_t arm = 0; arm < 2; ++arm) {
-				const float stagger = arm == 0 ? reach : -reach;
-				const size_t joint = arm == 0 ? 2 : 4;
-				const RagdollPart elbow = arm == 0 ? LeftElbow : RightElbow;
-				const RagdollPart hand = arm == 0 ? LeftHand : RightHand;
-				const TwoBoneIkResult pose = SolveTwoBoneIk(torso,
-					torso + olc::vf2d{ (3.0f + stagger) * facing, -19.0f },
-					RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, facing);
-				targets[elbow] = pose.joint;
-				targets[hand] = pose.end;
-			}
-			for (size_t leg = 0; leg < 2; ++leg) {
-				const float stagger = leg == 0 ? -reach : reach;
-				const size_t joint = leg == 0 ? 6 : 8;
-				const RagdollPart knee = leg == 0 ? LeftKnee : RightKnee;
-				const RagdollPart foot = leg == 0 ? LeftFoot : RightFoot;
-				const TwoBoneIkResult pose = SolveTwoBoneIk(targets[Hips],
-					targets[Hips] + olc::vf2d{ (1.5f + stagger) * facing, 22.0f },
-					RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, -facing);
-				targets[knee] = pose.joint;
-				targets[foot] = pose.end;
+			for (size_t limb = 0; limb < 2; ++limb) {
+				const bool reaching = limb == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight;
+				const bool armStep = limb == 0 ? leftStep : !leftStep;
+				const bool legStep = !armStep;
+				const size_t armJoint = limb == 0 ? 2 : 4;
+				const size_t legJoint = limb == 0 ? 6 : 8;
+				const RagdollPart elbow = limb == 0 ? LeftElbow : RightElbow;
+				const RagdollPart hand = limb == 0 ? LeftHand : RightHand;
+				const RagdollPart knee = limb == 0 ? LeftKnee : RightKnee;
+				const RagdollPart foot = limb == 0 ? LeftFoot : RightFoot;
+				const int handRung = std::clamp(base - (armStep ? 1 : 0), 0, rungCount);
+				const int footRung = std::clamp(base + 1 + (legStep ? 0 : 1), 0, rungCount);
+				const olc::vf2d handTarget = reaching ? torso + ragdoll.input.aim
+					: olc::vf2d{ rungX, ladder.pos.y + static_cast<float>(handRung) * LadderRungSpacing };
+				const TwoBoneIkResult arm = SolveTwoBoneIk(torso, handTarget,
+					RagdollJoints()[armJoint].length, RagdollJoints()[armJoint + 1].length, facing);
+				const TwoBoneIkResult leg = SolveTwoBoneIk(targets[Hips],
+					{ rungX, ladder.pos.y + static_cast<float>(footRung) * LadderRungSpacing },
+					RagdollJoints()[legJoint].length, RagdollJoints()[legJoint + 1].length, -facing);
+				targets[elbow] = arm.joint;
+				targets[hand] = arm.end;
+				targets[knee] = leg.joint;
+				targets[foot] = leg.end;
 			}
 			return targets;
 		}
 
 		if (movement == MovementState::Crawling) {
-			targets[Head] = torso + olc::vf2d{ 14.0f * facing, -2.0f };
-			targets[Hips] = torso + olc::vf2d{ -12.0f * facing, 2.0f };
+			targets[Head] = torso + olc::vf2d{ 14.0f * facing, 3.0f };
+			targets[Hips] = torso + olc::vf2d{ -12.0f * facing, -2.0f };
 		}
 
 		const float legHeight = movement == MovementState::Running ? 23.0f
@@ -174,7 +179,7 @@ namespace Trauma {
 			if (reaching)
 				offset = ragdoll.input.aim;
 			else if (movement == MovementState::Crawling)
-				offset = olc::vf2d{ (11.0f + phase * 5.0f) * facing, 9.0f - std::max(0.0f, phase) * 2.0f };
+				offset = olc::vf2d{ (12.0f + phase * 5.0f) * facing, 10.0f - std::max(0.0f, phase) * 2.0f };
 			else
 				offset = olc::vf2d{ (4.0f + phase * armSwing) * facing, 22.0f };
 			const TwoBoneIkResult pose = SolveTwoBoneIk(torso, torso + offset,
@@ -302,7 +307,7 @@ namespace Trauma {
 		for (size_t arm = 0; arm < ragdoll.grips.size(); ++arm) {
 			if (ragdoll.grips[arm].target == 0)
 				continue;
-			if ((arm == 0 ? LeftHand : RightHand) == index || (arm == 0 ? LeftElbow : RightElbow) == index)
+			if ((arm == 0 ? LeftHand : RightHand) == index)
 				return true;
 		}
 		return false;
@@ -451,11 +456,16 @@ namespace Trauma {
 			grip = {};
 			return;
 		}
-		if (grip.target != 0)
+		const bool moving = std::abs(ragdoll.input.moveX) > 0.01f;
+		if (grip.target != 0) {
+			if (grip.target <= TestTerrain().size()
+				&& (moving || (hand.position - grip.anchor).mag() > hand.radius + 6.0f))
+				grip = {};
 			return;
+		}
 
 		const auto& terrain = TestTerrain();
-		for (size_t i = 0; i < terrain.size(); ++i) {
+		for (size_t i = 0; !moving && i < terrain.size(); ++i) {
 			const olc::vf2d closest = olc::utils::geom2d::closest(terrain[i], hand.position);
 			const olc::vf2d offset = hand.position - closest;
 			const float distance = offset.mag();

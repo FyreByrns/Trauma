@@ -540,6 +540,26 @@ namespace Trauma {
 				snapshots.clear();
 				return false;
 			}
+			// Restored worlds can contain grip welds the rig no longer tracks
+			for (const PhysicsRig& rig : physics.rigs) {
+				for (size_t arm = 0; arm < rig.grips.size(); ++arm) {
+					const b2BodyId hand = rig.bodies[arm == 0 ? LeftHand : RightHand];
+					if (!b2Body_IsValid(hand))
+						continue;
+					b2JointId joints[8];
+					const int count = b2Body_GetJoints(hand, joints, 8);
+					for (int joint = 0; joint < count; ++joint) {
+						if (b2Joint_GetType(joints[joint]) != b2_weldJoint)
+							continue;
+						const b2JointId tracked = rig.grips[arm];
+						if (b2Joint_IsValid(tracked) && joints[joint].index1 == tracked.index1
+							&& joints[joint].world0 == tracked.world0
+							&& joints[joint].generation == tracked.generation)
+							continue;
+						b2DestroyJoint(joints[joint]);
+					}
+				}
+			}
 			snapshots.erase(snapshots.begin(), it + 1);
 			return true;
 		}

@@ -44,10 +44,10 @@ namespace Trauma {
 		if (ragdoll.ladder) {
 			const Terrain& ladder = TestLadders()[ragdoll.ladder - 1];
 			const float center = ladder.pos.x + ladder.size.x * 0.5f;
-			const float speedX = std::clamp((center - position.x) * 8.0f, -55.0f, 55.0f);
-			float speedY = std::clamp(input.climb, -1.0f, 1.0f) * 90.0f;
-			ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * 5.0f
-				* (0.4f + std::min(1.0f, std::abs(input.climb))), TwoPi);
+			const float speedX = std::clamp((center - ragdoll.facing * 12.0f - position.x) * 8.0f, -55.0f, 55.0f);
+			float speedY = std::clamp(input.climb, -1.0f, 1.0f) * 45.0f;
+			ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * 12.0f
+				* std::min(1.0f, std::abs(input.climb)), TwoPi);
 			const float top = ladder.pos.y + 18.0f;
 			const float bottom = ladder.pos.y + ladder.size.y - 32.0f;
 			if ((position.y <= top && speedY < 0.0f) || (position.y >= bottom && speedY > 0.0f))
