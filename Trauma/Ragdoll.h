@@ -107,6 +107,7 @@ namespace Trauma {
 			const bool leftStep = std::sin(ragdoll.gaitPhase) >= 0.0f;
 			targets[Head] = torso + olc::vf2d{ 0.0f, -14.0f };
 			targets[Hips] = torso + olc::vf2d{ 0.0f, 12.0f };
+			const int hipRung = static_cast<int>(std::floor((targets[Hips].y - ladder.pos.y) / LadderRungSpacing));
 			for (size_t limb = 0; limb < 2; ++limb) {
 				const bool reaching = limb == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight;
 				const bool armStep = limb == 0 ? leftStep : !leftStep;
@@ -118,7 +119,7 @@ namespace Trauma {
 				const RagdollPart knee = limb == 0 ? LeftKnee : RightKnee;
 				const RagdollPart foot = limb == 0 ? LeftFoot : RightFoot;
 				const int handRung = std::clamp(base - (armStep ? 1 : 0), 0, rungCount);
-				const int footRung = std::clamp(base + 1 + (legStep ? 0 : 1), 0, rungCount);
+				const int footRung = std::clamp(hipRung + 2 + (legStep ? 0 : 1), 0, rungCount);
 				const olc::vf2d handTarget = reaching ? torso + ragdoll.input.aim
 					: olc::vf2d{ rungX, ladder.pos.y + static_cast<float>(handRung) * LadderRungSpacing };
 				const TwoBoneIkResult arm = SolveTwoBoneIk(torso, handTarget,
