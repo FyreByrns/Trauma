@@ -83,7 +83,11 @@ namespace Trauma {
 			float previousAngle = 0.0f;
 		};
 
-		// Drops every piece of per-connection state.
+		struct PhysicsSnapshot {
+			uint32_t sequence = 0;
+			std::vector<uint8_t> image;
+		};
+
 		void ResetSession();
 		void SendHello();
 		void SendPacket(const Net::PacketWriter& packet) const;
@@ -94,11 +98,13 @@ namespace Trauma {
 		void ApplySnapshot(uint32_t serverTick, uint8_t count);
 		void Reconcile(const RagdollState& authoritative, uint32_t lastInput);
 		void StepPrediction(const InputState& input);
+		void CaptureSnapshot(uint32_t sequence);
+		bool RestoreSnapshot(uint32_t sequence);
 		void SmoothRemoteObjects(float fElapsedTime);
 
 	private:
 		Net::Socket socket;
-	PhysicsWorld physics;
+		PhysicsWorld physics;
 		Net::Endpoint server;
 		Status status = Status::Disconnected;
 		uint8_t playerId = 0;
@@ -112,6 +118,7 @@ namespace Trauma {
 		std::vector<ObjectView> players;
 		std::array<WorldItem, MaxWorldItems> worldItems{};
 		std::deque<SentInput> pending;
+		std::deque<PhysicsSnapshot> snapshots;
 		uint32_t nextInputSequence = 1;
 		float connectingTime = 0.0f;
 		float helloCooldown = 0.0f;

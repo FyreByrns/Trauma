@@ -5,6 +5,26 @@
 #include <iostream>
 #include <utility>
 
+namespace {
+	constexpr size_t MaxPredictionSnapshots = 96;
+	constexpr float ReconcilePositionTolerance = 3.0f;
+	constexpr float ReconcileAngleTolerance = 0.1f;
+	constexpr float ReconcileSpeedTolerance = 8.0f;
+
+	bool NeedsReconcile(const Trauma::ObjectState& incoming, b2BodyId body) {
+		if (!b2Body_IsValid(body))
+			return true;
+		const b2Transform current = b2Body_GetTransform(body);
+		const olc::vf2d difference = incoming.position - olc::vf2d{ current.p.x, current.p.y };
+		const float angleDifference = std::abs(std::remainder(
+			incoming.angle - b2Rot_GetAngle(current.q), Trauma::TwoPi));
+		const bool moving = incoming.velocity.mag2() > ReconcileSpeedTolerance * ReconcileSpeedTolerance
+			|| std::abs(incoming.angularVelocity) > 0.25f;
+		return moving || difference.mag2() > ReconcilePositionTolerance * ReconcilePositionTolerance
+			|| angleDifference > ReconcileAngleTolerance;
+	}
+}
+
 namespace Trauma {
 	Client::~Client() {
 		Disconnect();
@@ -54,6 +74,7 @@ namespace Trauma {
 		players.clear();
 		worldItems = {};
 		pending.clear();
+		snapshots.clear();
 		assemblingTick = 0;
 		assemblingCount = 0;
 		nextInputSequence = 1;
@@ -92,6 +113,7 @@ namespace Trauma {
 
 		StepPrediction(input);
 		predicted.parts[Torso].lastInput = sent.sequence;
+		CaptureSnapshot(sent.sequence);
 
 		while (pending.size() > 240)
 			pending.pop_front();
@@ -463,16 +485,65 @@ namespace Trauma {
 	}
 
 	void Client::Reconcile(const RagdollState& authoritative, uint32_t lastInput) {
+		const bool rewound = RestoreSnapshot(lastInput);
 		predicted = authoritative;
 		for (size_t i = 0; i < PartCount; ++i)
 			SetBodyTransform(EnsureBody(physics, predicted.parts[i], RagdollGroup(physics, &predicted)),
 				predicted.parts[i]);
-		for (PredictedBody& body : predictedBodies)
-			SetBodyTransform(EnsureBody(physics, body.state), body.state);
-		for (WorldItem& item : worldItems)
-			SetBodyTransform(EnsureBody(physics, item.body), item.body);
+		for (PredictedBody& body : predictedBodies) {
+			const b2BodyId id = EnsureBody(physics, body.state);
+			if (NeedsReconcile(body.state, id))
+				SetBodyTransform(id, body.state);
+		}
+		for (WorldItem& item : worldItems) {
+			const b2BodyId id = EnsureBody(physics, item.body);
+			if (NeedsReconcile(item.body, id))
+				SetBodyTransform(id, item.body);
+		}
 		while (!pending.empty() && pending.front().sequence <= lastInput)
 			pending.pop_front();
+		if (!rewound)
+			return;
+		for (const SentInput& sent : pending) {
+			StepPrediction(sent.input);
+			CaptureSnapshot(sent.sequence);
+		}
+	}
+
+	void Client::CaptureSnapshot(uint32_t sequence) {
+		const int size = b2World_GetSnapshot(physics.world, nullptr, 0);
+		if (size <= 0)
+			return;
+		PhysicsSnapshot snapshot;
+		snapshot.sequence = sequence;
+		snapshot.image.resize(static_cast<size_t>(size));
+		if (b2World_GetSnapshot(physics.world, snapshot.image.data(), size) != size)
+			return;
+		for (PhysicsSnapshot& existing : snapshots)
+			if (existing.sequence == sequence) {
+				existing = std::move(snapshot);
+				return;
+			}
+		snapshots.push_back(std::move(snapshot));
+		while (snapshots.size() > MaxPredictionSnapshots)
+			snapshots.pop_front();
+	}
+
+	bool Client::RestoreSnapshot(uint32_t sequence) {
+		for (auto it = snapshots.begin(); it != snapshots.end(); ++it) {
+			if (it->sequence != sequence)
+				continue;
+			if (!b2World_RestoreFromSnapshot(physics.world, it->image.data(),
+				static_cast<int>(it->image.size()))) {
+				ResetWorld(physics);
+				CreateTerrainBodies(physics);
+				snapshots.clear();
+				return false;
+			}
+			snapshots.erase(snapshots.begin(), it + 1);
+			return true;
+		}
+		return false;
 	}
 
 	void Client::StepPrediction(const InputState& input) {

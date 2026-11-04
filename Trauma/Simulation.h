@@ -44,10 +44,13 @@ namespace Trauma {
 		if (ragdoll.ladder) {
 			const Terrain& ladder = TestLadders()[ragdoll.ladder - 1];
 			const float center = ladder.pos.x + ladder.size.x * 0.5f;
-			const float speedX = std::clamp((center - ragdoll.facing * 12.0f - position.x) * 8.0f, -55.0f, 55.0f);
+			const float speedX = std::clamp((center - position.x) * 8.0f, -55.0f, 55.0f);
 			float speedY = std::clamp(input.climb, -1.0f, 1.0f) * 90.0f;
-			if ((position.y <= ladder.pos.y + 22.0f && speedY < 0.0f)
-				|| (position.y >= ladder.pos.y + ladder.size.y - 35.0f && speedY > 0.0f))
+			ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * 5.0f
+				* (0.4f + std::min(1.0f, std::abs(input.climb))), TwoPi);
+			const float top = ladder.pos.y + 18.0f;
+			const float bottom = ladder.pos.y + ladder.size.y - 32.0f;
+			if ((position.y <= top && speedY < 0.0f) || (position.y >= bottom && speedY > 0.0f))
 				speedY = 0.0f;
 			for (size_t i = 0; i < PartCount; ++i) {
 				const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
@@ -62,26 +65,35 @@ namespace Trauma {
 				|| ragdoll.parts[LeftHand].grounded || ragdoll.parts[RightHand].grounded));
 		if (std::abs(input.moveX) > 0.01f) {
 			ragdoll.facing = input.moveX > 0.0f ? 1.0f : -1.0f;
-			if (grounded) {
-				const float rate = movement == MovementState::Running ? 14.0f : movement == MovementState::Crawling ? 6.0f : 10.0f;
-				ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * rate * std::min(std::abs(input.moveX), 1.0f), TwoPi);
-			}
+			const float rate = movement == MovementState::Running ? 14.0f : movement == MovementState::Crawling ? 6.0f : 10.0f;
+			ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * rate * std::min(std::abs(input.moveX), 1.0f), TwoPi);
 		}
 		else if ((input.reachLeft || input.reachRight) && std::abs(input.aim.x) > 0.01f) {
 			ragdoll.facing = input.aim.x > 0.0f ? 1.0f : -1.0f;
 		}
 
-		const b2BodyId torso = EnsureBody(physics, ragdoll.parts[Torso], group);
-		const float torsoSpeed = b2Body_GetLinearVelocity(torso).x;
-		const float targetSpeed = std::clamp(input.moveX, -1.0f, 1.0f) * MovementSpeed(movement);
-		const float change = std::clamp(targetSpeed - torsoSpeed, -30.0f, 30.0f);
-		for (size_t i = 0; i < PartCount; ++i) {
-			const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
-			b2Vec2 velocity = b2Body_GetLinearVelocity(body);
-			velocity.x += change;
-			if (input.jump && grounded)
-				velocity.y = std::min(velocity.y, -JumpSpeed);
-			b2Body_SetLinearVelocity(body, velocity);
+		if (std::abs(input.moveX) > 0.01f || (input.jump && grounded)) {
+			const b2BodyId torso = EnsureBody(physics, ragdoll.parts[Torso], group);
+			const float torsoSpeed = b2Body_GetLinearVelocity(torso).x;
+			const float targetSpeed = std::clamp(input.moveX, -1.0f, 1.0f) * MovementSpeed(movement);
+			const float change = std::abs(input.moveX) > 0.01f
+				? std::clamp(targetSpeed - torsoSpeed, -30.0f, 30.0f) : 0.0f;
+			for (size_t i = 0; i < PartCount; ++i) {
+				const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
+				b2Vec2 velocity = b2Body_GetLinearVelocity(body);
+				velocity.x += change;
+				if (input.jump && grounded)
+					velocity.y = std::min(velocity.y, -JumpSpeed);
+				b2Body_SetLinearVelocity(body, velocity);
+			}
+		}
+		else if (grounded) {
+			for (size_t i = 0; i < PartCount; ++i) {
+				const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
+				b2Vec2 velocity = b2Body_GetLinearVelocity(body);
+				velocity.x *= 0.75f;
+				b2Body_SetLinearVelocity(body, velocity);
+			}
 		}
 	}
 
@@ -104,6 +116,8 @@ namespace Trauma {
 			DriveRagdoll(physics, *ragdoll);
 		for (RagdollState* ragdoll : ragdolls)
 			SyncGripJoints(physics, *ragdoll, objects);
+		for (RagdollState* ragdoll : ragdolls)
+			LimitRagdollJoints(physics, *ragdoll);
 
 		b2World_Step(physics.world, deltaTime, SolverSubSteps);
 
@@ -113,9 +127,6 @@ namespace Trauma {
 					EnsureBody(physics, ragdoll->parts[i], RagdollGroup(physics, ragdoll)));
 		for (ObjectState* object : objects)
 			SyncBody(*object, EnsureBody(physics, *object));
-
-		for (RagdollState* ragdoll : ragdolls)
-			HoldGroundedFooting(physics, *ragdoll);
 
 		PruneBodies(physics);
 	}

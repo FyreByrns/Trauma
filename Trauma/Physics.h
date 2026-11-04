@@ -19,6 +19,7 @@ namespace Trauma {
 	constexpr float BodyFriction = 0.6f;
 	constexpr float BodyRestitution = 0.05f;
 	constexpr float BodyAngularDamping = 1.5f;
+	constexpr float RagdollLinearDamping = 0.15f;
 	constexpr float GroundContactNormal = 0.6f;
 	constexpr float MinimumRadius = 0.1f;
 	constexpr int MaxPolygonVertices = 8;
@@ -213,6 +214,7 @@ namespace Trauma {
 		int group = 0;
 		std::array<b2BodyId, 16> bodies{};
 		std::array<b2JointId, 16> joints{};
+		std::array<b2JointId, 16> pose{};
 		std::array<b2JointId, 2> grips{};
 		std::array<uint8_t, 2> gripTargets{};
 		bool seen = false;
@@ -254,8 +256,9 @@ namespace Trauma {
 		def.rotation = b2MakeRot(object.angle);
 		def.linearVelocity = { object.velocity.x, object.velocity.y };
 		def.angularVelocity = object.angularVelocity;
+		def.linearDamping = group < 0 ? RagdollLinearDamping : 0.0f;
 		def.angularDamping = BodyAngularDamping;
-		def.enableSleep = object.inverseMass > 0.0f;
+		def.enableSleep = object.inverseMass > 0.0f && group >= 0;
 		def.isAwake = true;
 
 		const b2BodyId body = b2CreateBody(physics.world, &def);
@@ -289,7 +292,8 @@ namespace Trauma {
 	inline b2BodyId EnsureBody(PhysicsWorld& physics, const ObjectState& object, int group = 0) {
 		const uint32_t signature = BodySignature(object);
 		for (PhysicsBody& entry : physics.bodies)
-			if (entry.key == &object && entry.signature == signature && entry.group == group) {
+			if (entry.key == &object && entry.signature == signature && entry.group == group
+				&& b2Body_IsValid(entry.body)) {
 				entry.seen = true;
 				return entry.body;
 			}
@@ -369,6 +373,9 @@ namespace Trauma {
 			for (b2JointId& joint : rig.joints)
 				if (b2Joint_IsValid(joint))
 					b2DestroyJoint(joint);
+			for (b2JointId& pose : rig.pose)
+				if (b2Joint_IsValid(pose))
+					b2DestroyJoint(pose);
 			for (b2JointId& grip : rig.grips)
 				if (b2Joint_IsValid(grip))
 					b2DestroyJoint(grip);
@@ -385,6 +392,7 @@ namespace Trauma {
 		rig.group = -static_cast<int>(physics.rigs.size());
 		rig.bodies.fill(b2_nullBodyId);
 		rig.joints.fill(b2_nullJointId);
+		rig.pose.fill(b2_nullJointId);
 		rig.grips.fill(b2_nullJointId);
 		return rig.group;
 	}

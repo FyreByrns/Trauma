@@ -11,10 +11,18 @@
 #include <vector>
 
 namespace Trauma {
-	constexpr float FootingSlipLimit = 2.0f;
-	constexpr float LimbDriveStiffness = 180.0f;
-	constexpr float LimbDriveDamping = 24.0f;
-	constexpr float LimbDriveMaxAcceleration = 5000.0f;
+	constexpr float PoseVelocityGain = 12.0f;
+	constexpr float PoseMaxVelocity = 700.0f;
+	constexpr float PoseMaxForce = 12000.0f;
+
+	constexpr float GripSpringHertz = 5.0f;
+	constexpr float GripSpringDamping = 1.0f;
+	constexpr float GripConstraintHertz = 60.0f;
+
+	constexpr float JointBendTolerance = 0.12f;
+	constexpr float JointMaxBend = 2.9f;
+	constexpr float JointLimitGain = 250.0f;
+	constexpr float JointLimitMaxImpulse = 200.0f;
 
 	enum RagdollPart : size_t {
 		Torso, Head, Hips, LeftElbow, LeftHand, RightElbow, RightHand,
@@ -35,8 +43,6 @@ namespace Trauma {
 		float gaitPhase = 0.0f;
 		uint8_t ladder = 0;
 		float ladderDetachTime = 0.0f;
-		olc::vf2d footingAnchor;
-		bool footingAnchored = false;
 		Inventory inventory;
 	};
 
@@ -81,69 +87,79 @@ namespace Trauma {
 	}
 
 	inline std::array<olc::vf2d, PartCount> RagdollTargets(const RagdollState& ragdoll) {
+		const float facing = ragdoll.facing;
 		const olc::vf2d torso = ragdoll.parts[Torso].position;
+		const MovementState movement = GetMovementState(ragdoll.input);
+		const float stride = std::clamp(std::abs(ragdoll.input.moveX), 0.0f, 1.0f);
+		const float swing = std::sin(ragdoll.gaitPhase) * stride;
+
 		std::array<olc::vf2d, PartCount> targets;
 		for (size_t i = 0; i < PartCount; ++i) {
 			const olc::vf2d offset = RagdollOffsets()[i];
-			targets[i] = torso + olc::vf2d{ offset.x * ragdoll.facing, offset.y };
+			targets[i] = torso + olc::vf2d{ offset.x * facing, offset.y };
 		}
 
 		if (ragdoll.ladder) {
-			const Terrain& ladder = TestLadders()[ragdoll.ladder - 1];
-			const float rungX = ladder.pos.x + ladder.size.x * 0.5f;
-			const int count = static_cast<int>(ladder.size.y / LadderRungSpacing);
-			const int base = static_cast<int>(std::floor((torso.y - ladder.pos.y) / LadderRungSpacing));
-			const int offset = (base % 2 + 2) % 2;
-			for (size_t limb = 0; limb < 2; ++limb) {
-				const int stagger = limb == 0 ? offset : 1 - offset;
-				const size_t armJoint = limb == 0 ? 2 : 4;
-				const size_t legJoint = limb == 0 ? 6 : 8;
-				const RagdollPart elbow = limb == 0 ? LeftElbow : RightElbow;
-				const RagdollPart hand = limb == 0 ? LeftHand : RightHand;
-				const RagdollPart knee = limb == 0 ? LeftKnee : RightKnee;
-				const RagdollPart foot = limb == 0 ? LeftFoot : RightFoot;
-				const float handY = ladder.pos.y + std::clamp(base - 1 + stagger, 0, count) * LadderRungSpacing;
-				const float footY = ladder.pos.y + std::clamp(base + 2 - stagger, 0, count) * LadderRungSpacing;
-				const bool reaching = limb == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight;
-				const olc::vf2d handTarget = reaching ? torso + ragdoll.input.aim : olc::vf2d{rungX, handY};
-				const TwoBoneIkResult arm = SolveTwoBoneIk(torso, handTarget,
-					RagdollJoints()[armJoint].length, RagdollJoints()[armJoint + 1].length, ragdoll.facing);
-				const TwoBoneIkResult leg = SolveTwoBoneIk(targets[Hips], {rungX, footY},
-					RagdollJoints()[legJoint].length, RagdollJoints()[legJoint + 1].length, -ragdoll.facing);
-				targets[elbow] = arm.joint;
-				targets[hand] = arm.end;
-				targets[knee] = leg.joint;
-				targets[foot] = leg.end;
+			const float phase = std::sin(ragdoll.gaitPhase);
+			const float reach = phase * 2.0f;
+			targets[Head] = torso + olc::vf2d{ 0.0f, -14.0f };
+			targets[Hips] = torso + olc::vf2d{ 0.0f, 12.0f };
+			for (size_t arm = 0; arm < 2; ++arm) {
+				const float stagger = arm == 0 ? reach : -reach;
+				const size_t joint = arm == 0 ? 2 : 4;
+				const RagdollPart elbow = arm == 0 ? LeftElbow : RightElbow;
+				const RagdollPart hand = arm == 0 ? LeftHand : RightHand;
+				const TwoBoneIkResult pose = SolveTwoBoneIk(torso,
+					torso + olc::vf2d{ (3.0f + stagger) * facing, -19.0f },
+					RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, facing);
+				targets[elbow] = pose.joint;
+				targets[hand] = pose.end;
+			}
+			for (size_t leg = 0; leg < 2; ++leg) {
+				const float stagger = leg == 0 ? -reach : reach;
+				const size_t joint = leg == 0 ? 6 : 8;
+				const RagdollPart knee = leg == 0 ? LeftKnee : RightKnee;
+				const RagdollPart foot = leg == 0 ? LeftFoot : RightFoot;
+				const TwoBoneIkResult pose = SolveTwoBoneIk(targets[Hips],
+					targets[Hips] + olc::vf2d{ (1.5f + stagger) * facing, 22.0f },
+					RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, -facing);
+				targets[knee] = pose.joint;
+				targets[foot] = pose.end;
 			}
 			return targets;
 		}
 
-		const MovementState movement = GetMovementState(ragdoll.input);
-		const float stride = std::clamp(std::abs(ragdoll.input.moveX), 0.0f, 1.0f);
-		const float swing = std::sin(ragdoll.gaitPhase) * stride;
 		if (movement == MovementState::Crawling) {
-			const olc::vf2d headOffset{ 14.0f * ragdoll.facing, -2.0f };
-			const olc::vf2d hipOffset{ -12.0f * ragdoll.facing, 0.0f };
-			targets[Head] = torso + headOffset * (RagdollJoints()[0].length / headOffset.mag());
-			targets[Hips] = torso + hipOffset * (RagdollJoints()[1].length / hipOffset.mag());
+			targets[Head] = torso + olc::vf2d{ 14.0f * facing, -2.0f };
+			targets[Hips] = torso + olc::vf2d{ -12.0f * facing, 2.0f };
 		}
+
+		const float legHeight = movement == MovementState::Running ? 23.0f
+			: movement == MovementState::Crouching ? 13.0f : 24.0f;
+		const float strideLength = movement == MovementState::Running ? 17.0f
+			: movement == MovementState::Crouching ? 5.0f : 11.0f;
+		const float lift = movement == MovementState::Running ? 9.0f
+			: movement == MovementState::Crouching ? 2.0f : 6.0f;
+		const float armSwing = movement == MovementState::Running ? 11.0f
+			: movement == MovementState::Crouching ? 2.0f : 7.0f;
+
 		const olc::vf2d hip = targets[Hips];
 		for (int leg = 0; leg < 2; ++leg) {
 			const float phase = leg == 0 ? swing : -swing;
+			const float swingLift = leg == 0 ? std::cos(ragdoll.gaitPhase) : -std::cos(ragdoll.gaitPhase);
+			const size_t joint = leg == 0 ? 6 : 8;
 			const RagdollPart knee = leg == 0 ? LeftKnee : RightKnee;
 			const RagdollPart foot = leg == 0 ? LeftFoot : RightFoot;
-			const size_t joint = leg == 0 ? 6 : 8;
 			olc::vf2d offset;
 			if (movement == MovementState::Crawling)
-				offset = {(-18.0f + phase * 7.0f) * ragdoll.facing, 7.0f - std::max(0.0f, phase) * 3.0f};
-			else {
-				const float strideLength = movement == MovementState::Running ? 14.0f : movement == MovementState::Crouching ? 6.0f : 11.0f;
-				const float legHeight = movement == MovementState::Crouching ? 13.0f : 25.0f;
-				offset = {(phase * strideLength + (leg == 0 ? -2.0f : 2.0f)) * ragdoll.facing,
-					legHeight - std::max(0.0f, phase) * 5.0f};
-			}
-			const olc::vf2d target = hip + offset;
-			const TwoBoneIkResult pose = SolveTwoBoneIk(hip, target, RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, -ragdoll.facing);
+				offset = olc::vf2d{ (-18.0f + phase * 7.0f) * facing, 7.0f - std::max(0.0f, phase) * 3.0f };
+			else
+				offset = olc::vf2d{
+					(phase * strideLength + (leg == 0 ? -2.0f : 2.0f)) * facing,
+					legHeight - std::max(0.0f, swingLift) * lift
+				};
+			const TwoBoneIkResult pose = SolveTwoBoneIk(hip, hip + offset,
+				RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, -facing);
 			targets[knee] = pose.joint;
 			targets[foot] = pose.end;
 		}
@@ -154,11 +170,15 @@ namespace Trauma {
 			const RagdollPart elbow = arm == 0 ? LeftElbow : RightElbow;
 			const RagdollPart hand = arm == 0 ? LeftHand : RightHand;
 			const float phase = arm == 0 ? -swing : swing;
-			const olc::vf2d offset = reaching ? ragdoll.input.aim : movement == MovementState::Crawling
-				? olc::vf2d{(9.0f + phase * 6.0f) * ragdoll.facing, 10.0f}
-				: olc::vf2d{RagdollOffsets()[hand].x * ragdoll.facing, RagdollOffsets()[hand].y};
+			olc::vf2d offset;
+			if (reaching)
+				offset = ragdoll.input.aim;
+			else if (movement == MovementState::Crawling)
+				offset = olc::vf2d{ (11.0f + phase * 5.0f) * facing, 9.0f - std::max(0.0f, phase) * 2.0f };
+			else
+				offset = olc::vf2d{ (4.0f + phase * armSwing) * facing, 22.0f };
 			const TwoBoneIkResult pose = SolveTwoBoneIk(torso, torso + offset,
-				RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, ragdoll.facing);
+				RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, facing);
 			targets[elbow] = pose.joint;
 			targets[hand] = pose.end;
 		}
@@ -170,43 +190,62 @@ namespace Trauma {
 			&& first.generation == second.generation;
 	}
 
-	inline b2JointId CreateRevoluteJoint(PhysicsWorld& physics, b2BodyId first, b2BodyId second,
-		const olc::vf2d& anchor) {
-		b2RevoluteJointDef def = b2DefaultRevoluteJointDef();
-		def.base.bodyIdA = first;
-		def.base.bodyIdB = second;
-		const b2Transform firstTransform = b2Body_GetTransform(first);
-		const b2Transform secondTransform = b2Body_GetTransform(second);
-		def.base.localFrameA.p = { anchor.x - firstTransform.p.x, anchor.y - firstTransform.p.y };
-		def.base.localFrameA.q = b2MakeRot(0.0f);
-		def.base.localFrameB.p = { anchor.x - secondTransform.p.x, anchor.y - secondTransform.p.y };
-		def.base.localFrameB.q = b2MakeRot(0.0f);
-		def.base.collideConnected = false;
-		def.base.constraintHertz = 0.0f;
-		def.base.constraintDampingRatio = 1.0f;
-		def.enableMotor = false;
-		def.enableLimit = false;
-		return b2CreateRevoluteJoint(physics.world, &def);
+	inline olc::vf2d LocalAnchor(const b2Transform& transform, const olc::vf2d& anchor) {
+		const olc::vf2d offset = anchor - olc::vf2d{ transform.p.x, transform.p.y };
+		return Rotate(offset, -b2Rot_GetAngle(transform.q));
 	}
 
-	inline b2JointId CreateWeldJoint(PhysicsWorld& physics, b2BodyId first, b2BodyId second,
-		const olc::vf2d& anchor) {
+	inline b2JointId CreateRod(PhysicsWorld& physics, b2BodyId first, b2BodyId second, float length) {
+		b2DistanceJointDef def = b2DefaultDistanceJointDef();
+		def.base.bodyIdA = first;
+		def.base.bodyIdB = second;
+		def.length = length;
+		def.enableSpring = false;
+		def.enableLimit = false;
+		def.enableMotor = false;
+		def.base.collideConnected = false;
+		def.base.constraintHertz = 60.0f;
+		def.base.constraintDampingRatio = 2.0f;
+		return b2CreateDistanceJoint(physics.world, &def);
+	}
+
+	inline b2JointId CreatePoseJoint(PhysicsWorld& physics, b2BodyId torso, b2BodyId part) {
+		b2MotorJointDef def = b2DefaultMotorJointDef();
+		def.base.bodyIdA = torso;
+		def.base.bodyIdB = part;
+		def.base.collideConnected = false;
+		def.linearHertz = 0.0f;
+		def.angularHertz = 0.0f;
+		def.maxSpringForce = 0.0f;
+		def.maxSpringTorque = 0.0f;
+		def.linearVelocity = { 0.0f, 0.0f };
+		def.angularVelocity = 0.0f;
+		def.maxVelocityForce = PoseMaxForce;
+		def.maxVelocityTorque = 0.0f;
+		return b2CreateMotorJoint(physics.world, &def);
+	}
+
+	inline b2JointId CreateGripJoint(PhysicsWorld& physics, b2BodyId first, b2BodyId second,
+		const olc::vf2d& anchor, bool rigid) {
 		b2WeldJointDef def = b2DefaultWeldJointDef();
 		def.base.bodyIdA = first;
 		def.base.bodyIdB = second;
 		const b2Transform firstTransform = b2Body_GetTransform(first);
 		const b2Transform secondTransform = b2Body_GetTransform(second);
-		def.base.localFrameA.p = { anchor.x - firstTransform.p.x, anchor.y - firstTransform.p.y };
-		def.base.localFrameA.q = b2MakeRot(0.0f);
-		def.base.localFrameB.p = { anchor.x - secondTransform.p.x, anchor.y - secondTransform.p.y };
-		def.base.localFrameB.q = b2MakeRot(0.0f);
+		const olc::vf2d firstLocal = LocalAnchor(firstTransform, anchor);
+		const olc::vf2d secondLocal = LocalAnchor(secondTransform, anchor);
+		def.base.localFrameA.p = { firstLocal.x, firstLocal.y };
+		def.base.localFrameA.q = b2MakeRot(-b2Rot_GetAngle(firstTransform.q));
+		def.base.localFrameB.p = { secondLocal.x, secondLocal.y };
+		def.base.localFrameB.q = b2MakeRot(-b2Rot_GetAngle(secondTransform.q));
 		def.base.collideConnected = false;
-		def.base.constraintHertz = 0.0f;
-		def.base.constraintDampingRatio = 1.0f;
-		def.linearHertz = 0.0f;
-		def.angularHertz = 0.0f;
-		def.linearDampingRatio = 1.0f;
-		def.angularDampingRatio = 1.0f;
+		def.base.constraintHertz = GripConstraintHertz;
+		def.base.constraintDampingRatio = 2.0f;
+		// Zero hertz is maximum stiffness
+		def.linearHertz = rigid ? 0.0f : GripSpringHertz;
+		def.angularHertz = rigid ? 0.0f : GripSpringHertz;
+		def.linearDampingRatio = GripSpringDamping;
+		def.angularDampingRatio = GripSpringDamping;
 		return b2CreateWeldJoint(physics.world, &def);
 	}
 
@@ -229,7 +268,13 @@ namespace Trauma {
 			}
 		}
 
-		if (!rebuilt && b2Joint_IsValid(rig->joints[0]))
+		const auto& joints = RagdollJoints();
+		bool jointsValid = true;
+		for (size_t j = 0; j < joints.size(); ++j)
+			jointsValid = jointsValid && b2Joint_IsValid(rig->joints[j]);
+		for (size_t i = 1; i < PartCount; ++i)
+			jointsValid = jointsValid && b2Joint_IsValid(rig->pose[i]);
+		if (!rebuilt && jointsValid)
 			return *rig;
 
 		for (b2JointId& grip : rig->grips) {
@@ -239,44 +284,103 @@ namespace Trauma {
 		}
 		rig->gripTargets = {};
 
-		const auto& joints = RagdollJoints();
 		for (size_t j = 0; j < joints.size(); ++j) {
 			if (b2Joint_IsValid(rig->joints[j]))
 				b2DestroyJoint(rig->joints[j]);
-			rig->joints[j] = CreateRevoluteJoint(physics, rig->bodies[joints[j].first],
-				rig->bodies[joints[j].second],
-				(ragdoll.parts[joints[j].first].position + ragdoll.parts[joints[j].second].position) * 0.5f);
+			rig->joints[j] = CreateRod(physics, rig->bodies[joints[j].first],
+				rig->bodies[joints[j].second], joints[j].length);
+		}
+		for (size_t i = 1; i < PartCount; ++i) {
+			if (b2Joint_IsValid(rig->pose[i]))
+				b2DestroyJoint(rig->pose[i]);
+			rig->pose[i] = CreatePoseJoint(physics, rig->bodies[Torso], rig->bodies[i]);
 		}
 		return *rig;
+	}
+
+	inline bool ArmGripping(const RagdollState& ragdoll, size_t index) {
+		for (size_t arm = 0; arm < ragdoll.grips.size(); ++arm) {
+			if (ragdoll.grips[arm].target == 0)
+				continue;
+			if ((arm == 0 ? LeftHand : RightHand) == index || (arm == 0 ? LeftElbow : RightElbow) == index)
+				return true;
+		}
+		return false;
 	}
 
 	inline void DriveRagdoll(PhysicsWorld& physics, RagdollState& ragdoll) {
 		const auto targets = RagdollTargets(ragdoll);
 		PhysicsRig& rig = EnsureRig(physics, ragdoll);
-		const olc::vf2d torsoVelocity = ragdoll.parts[Torso].velocity;
-		const float torsoInverseMass = ragdoll.parts[Torso].inverseMass;
-		olc::vf2d reaction;
+
 		for (size_t i = 1; i < PartCount; ++i) {
-			const b2BodyId body = rig.bodies[i];
-			if (!b2Body_IsValid(body) || ragdoll.parts[i].inverseMass <= 0.0f)
+			const b2JointId joint = rig.pose[i];
+			if (!b2Joint_IsValid(joint))
 				continue;
-			const ObjectState& part = ragdoll.parts[i];
-			olc::vf2d acceleration = (targets[i] - part.position) * LimbDriveStiffness
-				- (part.velocity - torsoVelocity) * LimbDriveDamping;
-			const float magnitude = acceleration.mag();
-			if (magnitude > LimbDriveMaxAcceleration)
-				acceleration *= LimbDriveMaxAcceleration / magnitude;
-			const float mass = 1.0f / part.inverseMass;
-			b2Body_ApplyForceToCenter(body, { acceleration.x * mass, acceleration.y * mass }, true);
-			reaction -= acceleration * (torsoInverseMass / part.inverseMass);
-		}
-		const b2BodyId torsoBody = rig.bodies[Torso];
-		if (b2Body_IsValid(torsoBody) && torsoInverseMass > 0.0f) {
-			const float mass = 1.0f / torsoInverseMass;
-			b2Body_ApplyForceToCenter(torsoBody, { reaction.x * mass, reaction.y * mass }, true);
+			if (ArmGripping(ragdoll, i)) {
+				b2MotorJoint_SetMaxVelocityForce(joint, 0.0f);
+				continue;
+			}
+			b2MotorJoint_SetMaxVelocityForce(joint, PoseMaxForce);
+			olc::vf2d velocity = (targets[i] - ragdoll.parts[i].position) * PoseVelocityGain;
+			const float magnitude = velocity.mag();
+			if (magnitude > PoseMaxVelocity)
+				velocity *= PoseMaxVelocity / magnitude;
+			b2MotorJoint_SetLinearVelocity(joint, { velocity.x, velocity.y });
 		}
 	}
 
+	inline float BoneBend(const olc::vf2d& root, const olc::vf2d& joint, const olc::vf2d& end) {
+		const olc::vf2d upper = joint - root;
+		const olc::vf2d lower = end - joint;
+		return std::atan2(upper.x * lower.y - upper.y * lower.x, upper.dot(lower));
+	}
+
+	inline void LimitRagdollJoint(const RagdollState& ragdoll, const PhysicsRig& rig,
+		RagdollPart rootPart, RagdollPart jointPart, RagdollPart endPart,
+		const olc::vf2d& targetRoot, const olc::vf2d& targetJoint, const olc::vf2d& targetEnd) {
+		const olc::vf2d root = ragdoll.parts[rootPart].position;
+		const olc::vf2d joint = ragdoll.parts[jointPart].position;
+		const olc::vf2d end = ragdoll.parts[endPart].position;
+		const olc::vf2d lower = end - joint;
+		if ((joint - root).mag2() < 0.0001f || lower.mag2() < 0.0001f)
+			return;
+
+		const float actual = BoneBend(root, joint, end);
+		const float target = BoneBend(targetRoot, targetJoint, targetEnd);
+		float minimum = -JointBendTolerance;
+		float maximum = JointMaxBend;
+		if (target < -0.02f) {
+			minimum = -JointMaxBend;
+			maximum = JointBendTolerance;
+		}
+		else if (std::abs(target) <= 0.02f) {
+			minimum = -0.35f;
+			maximum = 0.35f;
+		}
+		if (actual >= minimum && actual <= maximum)
+			return;
+
+		const float violation = actual < minimum ? minimum - actual : actual - maximum;
+		const float direction = actual < minimum ? 1.0f : -1.0f;
+		const olc::vf2d tangent = olc::vf2d{ -lower.y, lower.x } * (1.0f / lower.mag());
+		const float magnitude = std::min(JointLimitMaxImpulse, violation * JointLimitGain);
+		const olc::vf2d impulse = tangent * (direction * magnitude);
+		b2Body_ApplyLinearImpulseToCenter(rig.bodies[endPart], { impulse.x, impulse.y }, true);
+		b2Body_ApplyLinearImpulseToCenter(rig.bodies[jointPart], { -impulse.x, -impulse.y }, true);
+	}
+
+	inline void LimitRagdollJoints(PhysicsWorld& physics, const RagdollState& ragdoll) {
+		const auto targets = RagdollTargets(ragdoll);
+		const PhysicsRig& rig = EnsureRig(physics, ragdoll);
+		LimitRagdollJoint(ragdoll, rig, Torso, LeftElbow, LeftHand,
+			targets[Torso], targets[LeftElbow], targets[LeftHand]);
+		LimitRagdollJoint(ragdoll, rig, Torso, RightElbow, RightHand,
+			targets[Torso], targets[RightElbow], targets[RightHand]);
+		LimitRagdollJoint(ragdoll, rig, Hips, LeftKnee, LeftFoot,
+			targets[Hips], targets[LeftKnee], targets[LeftFoot]);
+		LimitRagdollJoint(ragdoll, rig, Hips, RightKnee, RightFoot,
+			targets[Hips], targets[RightKnee], targets[RightFoot]);
+	}
 
 	inline olc::vf2d ClosestOnObject(const ObjectState& object, const olc::vf2d& position) {
 		if (object.shape != Shape::Polygon) {
@@ -355,9 +459,11 @@ namespace Trauma {
 			const olc::vf2d closest = olc::utils::geom2d::closest(terrain[i], hand.position);
 			const olc::vf2d offset = hand.position - closest;
 			const float distance = offset.mag();
-			if (distance > hand.radius + 0.5f || distance < 0.0001f)
+			if (distance > hand.radius + 0.5f)
 				continue;
-			if (!AimingAtContact(ragdoll.input.aim, offset / distance))
+			const olc::vf2d normal = distance > 0.0001f ? offset / distance
+				: (ragdoll.input.aim.mag() > 0.0001f ? -ragdoll.input.aim.norm() : olc::vf2d{ 0.0f, -1.0f });
+			if (!AimingAtContact(ragdoll.input.aim, normal))
 				continue;
 			grip.target = static_cast<uint8_t>(i + 1);
 			grip.anchor = closest;
@@ -369,7 +475,8 @@ namespace Trauma {
 			const float distance = offset.mag();
 			if (distance > hand.radius + 0.5f)
 				continue;
-			const olc::vf2d normal = distance > 0.0001f ? offset / distance : olc::vf2d{0.0f, -1.0f};
+			const olc::vf2d normal = distance > 0.0001f ? offset / distance
+				: (ragdoll.input.aim.mag() > 0.0001f ? -ragdoll.input.aim.norm() : olc::vf2d{ 0.0f, -1.0f });
 			if (!AimingAtContact(ragdoll.input.aim, normal))
 				continue;
 			grip.target = static_cast<uint8_t>(terrain.size() + i + 1);
@@ -396,7 +503,7 @@ namespace Trauma {
 			}
 
 			const bool sameTarget = rig.gripTargets[arm] == grip.target;
-			if (sameTarget && b2Joint_IsValid(rig.grips[arm]))
+			if (grip.target > 0 && sameTarget && b2Joint_IsValid(rig.grips[arm]))
 				continue;
 			if (b2Joint_IsValid(rig.grips[arm]))
 				b2DestroyJoint(rig.grips[arm]);
@@ -404,47 +511,12 @@ namespace Trauma {
 			rig.gripTargets[arm] = grip.target;
 			if (grip.target == 0 || !b2Body_IsValid(target))
 				continue;
-			if (!b2Body_IsValid(rig.bodies[arm == 0 ? LeftHand : RightHand]))
+			const b2BodyId hand = rig.bodies[arm == 0 ? LeftHand : RightHand];
+			if (!b2Body_IsValid(hand))
 				continue;
-			rig.grips[arm] = CreateWeldJoint(physics, rig.bodies[arm == 0 ? LeftHand : RightHand],
-				target, ragdoll.parts[arm == 0 ? LeftHand : RightHand].position);
-		}
-	}
-
-	inline void HoldGroundedFooting(PhysicsWorld& physics, RagdollState& ragdoll) {
-		const int group = RagdollGroup(physics, &ragdoll);
-		const bool idle = !ragdoll.ladder && std::abs(ragdoll.input.moveX) <= 0.01f;
-		const bool feet = ragdoll.parts[LeftFoot].grounded || ragdoll.parts[RightFoot].grounded;
-		const bool crawlContact = GetMovementState(ragdoll.input) == MovementState::Crawling
-			&& (ragdoll.parts[Torso].grounded || ragdoll.parts[Hips].grounded
-				|| ragdoll.parts[LeftHand].grounded || ragdoll.parts[RightHand].grounded);
-		if (!idle || !(feet || crawlContact)) {
-			ragdoll.footingAnchored = false;
-			return;
-		}
-
-		for (size_t i = 0; i < PartCount; ++i) {
-			const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
-			b2Vec2 velocity = b2Body_GetLinearVelocity(body);
-			velocity.x = 0.0f;
-			b2Body_SetLinearVelocity(body, velocity);
-		}
-
-		const olc::vf2d torso = ragdoll.parts[Torso].position;
-		if (!ragdoll.footingAnchored) {
-			ragdoll.footingAnchor = torso;
-			ragdoll.footingAnchored = true;
-			return;
-		}
-		const float slip = torso.x - ragdoll.footingAnchor.x;
-		if (std::abs(slip) > FootingSlipLimit) {
-			ragdoll.footingAnchor = torso;
-			return;
-		}
-		for (size_t i = 0; i < PartCount; ++i) {
-			const b2BodyId body = EnsureBody(physics, ragdoll.parts[i], group);
-			const b2Transform transform = b2Body_GetTransform(body);
-			b2Body_SetTransform(body, { transform.p.x - slip, transform.p.y }, transform.q);
+			const bool rigid = grip.target <= terrainCount;
+			rig.grips[arm] = CreateGripJoint(physics, hand, target,
+				ragdoll.parts[arm == 0 ? LeftHand : RightHand].position, rigid);
 		}
 	}
 }
