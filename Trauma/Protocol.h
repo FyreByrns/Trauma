@@ -241,6 +241,7 @@ namespace Trauma::Net {
 		packet.Write(ragdoll.parts[Torso].lastInput);
 		packet.Write(ragdoll.facing);
 		packet.Write(ragdoll.gaitPhase);
+		packet.Write(ragdoll.crouchTurn);
 		packet.Write(ragdoll.ladder);
 		packet.Write(ragdoll.ladderDetachTime);
 		WriteInput(packet, ragdoll.input);
@@ -268,6 +269,8 @@ namespace Trauma::Net {
 		ragdoll = CreateRagdoll({0.0f, 0.0f});
 		if (!reader.Read(id) || !reader.Read(ragdoll.parts[Torso].lastInput)
 			|| !reader.Read(ragdoll.facing) || !reader.Read(ragdoll.gaitPhase)
+			|| !reader.Read(ragdoll.crouchTurn) || !std::isfinite(ragdoll.crouchTurn)
+			|| ragdoll.crouchTurn < 0.0f
 			|| !reader.Read(ragdoll.ladder) || ragdoll.ladder > TestLadders().size()
 			|| !reader.Read(ragdoll.ladderDetachTime) || !ReadInput(reader, ragdoll.input))
 			return false;

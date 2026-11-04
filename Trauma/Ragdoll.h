@@ -14,6 +14,7 @@ namespace Trauma {
 	constexpr float PoseVelocityGain = 12.0f;
 	constexpr float PoseMaxVelocity = 700.0f;
 	constexpr float PoseMaxForce = 12000.0f;
+	constexpr float HipsPoseMaxForce = PoseMaxForce * 4.0f;
 
 	constexpr float GripSpringHertz = 20.0f;
 	constexpr float GripSpringDamping = 1.0f;
@@ -40,6 +41,7 @@ namespace Trauma {
 		std::array<HandGrip, 2> grips{};
 		InputState input;
 		float facing = 1.0f;
+		float crouchTurn = 0.0f;
 		float gaitPhase = 0.0f;
 		uint8_t ladder = 0;
 		float ladderDetachTime = 0.0f;
@@ -141,7 +143,8 @@ namespace Trauma {
 		}
 
 		const float legHeight = movement == MovementState::Running ? 23.0f
-			: movement == MovementState::Crouching ? 13.0f : 24.0f;
+			: movement == MovementState::Crouching
+				? 13.0f + 11.0f * std::clamp(ragdoll.crouchTurn / 0.15f, 0.0f, 1.0f) : 24.0f;
 		const float strideLength = movement == MovementState::Running ? 17.0f
 			: movement == MovementState::Crouching ? 5.0f : 11.0f;
 		const float lift = movement == MovementState::Running ? 9.0f
@@ -326,7 +329,7 @@ namespace Trauma {
 				b2MotorJoint_SetMaxVelocityForce(joint, 0.0f);
 				continue;
 			}
-			b2MotorJoint_SetMaxVelocityForce(joint, PoseMaxForce);
+			b2MotorJoint_SetMaxVelocityForce(joint, i == Hips ? HipsPoseMaxForce : PoseMaxForce);
 			olc::vf2d velocity = (targets[i] - ragdoll.parts[i].position) * PoseVelocityGain;
 			const float magnitude = velocity.mag();
 			if (magnitude > PoseMaxVelocity)

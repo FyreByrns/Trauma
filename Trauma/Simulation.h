@@ -15,6 +15,7 @@ namespace Trauma {
 
 	inline void ApplyRagdollInput(PhysicsWorld& physics, RagdollState& ragdoll, const InputState& input) {
 		ragdoll.input = input;
+		ragdoll.crouchTurn = std::max(0.0f, ragdoll.crouchTurn - FixedDeltaTime);
 		const int group = RagdollGroup(physics, &ragdoll);
 		if (input.hotbar < HotbarSlots)
 			ragdoll.inventory.selected = input.hotbar;
@@ -63,13 +64,18 @@ namespace Trauma {
 		const bool grounded = ragdoll.parts[LeftFoot].grounded || ragdoll.parts[RightFoot].grounded
 			|| (movement == MovementState::Crawling && (ragdoll.parts[Torso].grounded || ragdoll.parts[Hips].grounded
 				|| ragdoll.parts[LeftHand].grounded || ragdoll.parts[RightHand].grounded));
+		const auto turnTo = [&](float value) {
+			if (movement == MovementState::Crouching && value != ragdoll.facing)
+				ragdoll.crouchTurn = 0.3f;
+			ragdoll.facing = value;
+		};
 		if (std::abs(input.moveX) > 0.01f) {
-			ragdoll.facing = input.moveX > 0.0f ? 1.0f : -1.0f;
+			turnTo(input.moveX > 0.0f ? 1.0f : -1.0f);
 			const float rate = movement == MovementState::Running ? 14.0f : movement == MovementState::Crawling ? 6.0f : 10.0f;
 			ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * rate * std::min(std::abs(input.moveX), 1.0f), TwoPi);
 		}
 		else if ((input.reachLeft || input.reachRight) && std::abs(input.aim.x) > 0.01f) {
-			ragdoll.facing = input.aim.x > 0.0f ? 1.0f : -1.0f;
+			turnTo(input.aim.x > 0.0f ? 1.0f : -1.0f);
 		}
 
 		if (std::abs(input.moveX) > 0.01f || (input.jump && grounded)) {
