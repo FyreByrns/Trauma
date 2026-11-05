@@ -73,6 +73,7 @@ namespace Trauma {
 		predictedBodies.clear();
 		players.clear();
 		worldItems = {};
+		shelves = {};
 		pending.clear();
 		snapshots.clear();
 		assemblingTick = 0;
@@ -191,6 +192,52 @@ namespace Trauma {
 		return worldItems;
 	}
 
+	const std::array<Client::ShelfView, MaxShelves>& Client::GetShelves() const {
+		return shelves;
+	}
+
+	int Client::ShelfAt(const olc::vf2d& position) const {
+		for (size_t i = 0; i < shelves.size(); ++i) {
+			const ShelfView& shelf = shelves[i];
+			if (!shelf.active)
+				continue;
+			const olc::vf2d local = position - shelf.position;
+			if (local.x >= -ShelfHalfWidth && local.x <= ShelfHalfWidth
+				&& local.y >= ShelfPickTop && local.y <= ShelfPickBottom)
+				return static_cast<int>(i);
+		}
+		return -1;
+	}
+
+	bool Client::IsShelfDrop(const olc::vf2d& position) const {
+		for (const ShelfView& shelf : shelves) {
+			if (!shelf.active)
+				continue;
+			float boardTop = 0.0f;
+			if (ShelfSlotAt(position - shelf.position, boardTop))
+				return true;
+		}
+		return false;
+	}
+
+	void Client::PlaceShelf(const olc::vf2d& position) {
+		if (status != Status::Connected)
+			return;
+		Net::PacketWriter packet(Net::MessageType::Shelf);
+		Net::WriteShelfPlace(packet, position);
+		SendPacket(packet);
+	}
+
+	void Client::MoveShelf(uint8_t index, const olc::vf2d& position) {
+		if (status != Status::Connected || index >= MaxShelves || !shelves[index].active)
+			return;
+		Net::PacketWriter packet(Net::MessageType::Shelf);
+		Net::WriteShelfMove(packet, index, position);
+		SendPacket(packet);
+		shelves[index].previousPosition = shelves[index].position;
+		shelves[index].position = position;
+	}
+
 	void Client::MoveItem(bool fromClothing, size_t from, bool toClothing, size_t to) {
 		if (status != Status::Connected)
 			return;
@@ -207,13 +254,16 @@ namespace Trauma {
 		const Item item = fromClothing
 			? (index < predicted.inventory.clothing.size() ? predicted.inventory.clothing[index] : Item::None)
 			: (index < predicted.inventory.hotbar.size() ? predicted.inventory.hotbar[index] : Item::None);
-		if (item == Item::None)
+		if (item == Item::None || item == Item::Shelf)
 			return;
 
 		Net::PacketWriter packet(Net::MessageType::Inventory);
 		Net::WriteInventoryDrop(packet, fromClothing, static_cast<uint8_t>(index), position);
 		SendPacket(packet);
 		TakeInventoryItem(predicted.inventory, fromClothing, index);
+
+		if (IsShelfDrop(position))
+			return;
 
 		for (WorldItem& slot : worldItems)
 			if (slot.item == Item::None) {
@@ -224,7 +274,7 @@ namespace Trauma {
 			}
 	}
 
-	bool Client::GetPickupCandidate(size_t& index) const {
+	bool Client::GetPickupCandidate(PickupTarget& target) const {
 		const uint8_t base = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount);
 		for (const HandGrip& grip : predicted.grips) {
 			if (grip.target <= base)
@@ -232,40 +282,82 @@ namespace Trauma {
 			const size_t candidate = static_cast<size_t>(grip.target) - base - 1;
 			if (candidate >= MaxWorldItems)
 				continue;
-			index = candidate;
+			target = {};
+			target.index = static_cast<uint8_t>(candidate);
 			return true;
 		}
 		for (size_t slot = 0; slot < worldItems.size(); ++slot)
 			if (worldItems[slot].item != Item::None
 				&& HandsOnItem(predicted, worldItems[slot].body)) {
-				index = slot;
+				target = {};
+				target.index = static_cast<uint8_t>(slot);
 				return true;
 			}
+		for (size_t shelfIndex = 0; shelfIndex < shelves.size(); ++shelfIndex) {
+			const ShelfView& shelf = shelves[shelfIndex];
+			if (!shelf.active)
+				continue;
+			for (size_t itemIndex = 0; itemIndex < shelf.items.size(); ++itemIndex) {
+				const ShelfItemView& item = shelf.items[itemIndex];
+				if (item.item == Item::None)
+					continue;
+				ObjectState body = item.body;
+				body.position += shelf.position;
+				if (!HandsOnItem(predicted, body))
+					continue;
+				target = {};
+				target.shelf = true;
+				target.index = static_cast<uint8_t>(shelfIndex);
+				target.item = static_cast<uint8_t>(itemIndex);
+				return true;
+			}
+		}
 		return false;
 	}
 
-	void Client::PickupItem(size_t index) {
-		if (status != Status::Connected || index >= MaxWorldItems)
+	void Client::PickupItem(const PickupTarget& target) {
+		if (status != Status::Connected)
 			return;
-		if (worldItems[index].item == Item::None)
+
+		if (target.shelf) {
+			if (target.index >= MaxShelves || target.item >= MaxShelfItems)
+				return;
+			ShelfView& shelf = shelves[target.index];
+			if (!shelf.active || shelf.items[target.item].item == Item::None)
+				return;
+
+			Net::PacketWriter packet(Net::MessageType::Inventory);
+			Net::WriteShelfPickup(packet, target.index, target.item);
+			SendPacket(packet);
+
+			for (Item& slot : predicted.inventory.hotbar)
+				if (slot == Item::None) {
+					slot = shelf.items[target.item].item;
+					break;
+				}
+			shelf.items[target.item] = ShelfItemView{};
+			return;
+		}
+
+		if (target.index >= MaxWorldItems || worldItems[target.index].item == Item::None)
 			return;
 
 		Net::PacketWriter packet(Net::MessageType::Inventory);
-		Net::WriteInventoryPickup(packet, static_cast<uint8_t>(index));
+		Net::WriteInventoryPickup(packet, target.index);
 		SendPacket(packet);
 
 		for (Item& slot : predicted.inventory.hotbar)
 			if (slot == Item::None) {
-				slot = worldItems[index].item;
+				slot = worldItems[target.index].item;
 				break;
 			}
 
-		const uint8_t target = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + index + 1);
+		const uint8_t targetId = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + target.index + 1);
 		for (HandGrip& grip : predicted.grips)
-			if (grip.target == target)
+			if (grip.target == targetId)
 				grip = {};
 
-		worldItems[index] = WorldItem{};
+		worldItems[target.index] = WorldItem{};
 	}
 
 	bool Client::GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const {
@@ -389,6 +481,51 @@ namespace Trauma {
 				chunk.items[i].body.angle = angle;
 				chunk.items[i].body.angularVelocity = spin;
 			}
+
+			uint8_t shelfCount = 0;
+			if (!reader.Read(shelfCount) || shelfCount != MaxShelves)
+				return;
+			for (size_t i = 0; i < MaxShelves; ++i) {
+				uint8_t active = 0;
+				if (!reader.Read(active) || active > 1)
+					return;
+				ShelfView view;
+				view.active = active != 0;
+				if (view.active) {
+					if (!reader.Read(view.position.x) || !reader.Read(view.position.y)
+						|| !std::isfinite(view.position.x) || !std::isfinite(view.position.y)
+						|| std::abs(view.position.x) > 2000.0f
+						|| view.position.y < -800.0f || view.position.y > 1000.0f)
+						return;
+					view.previousPosition = view.position;
+
+					uint8_t itemCount = 0;
+					if (!reader.Read(itemCount) || itemCount != MaxShelfItems)
+						return;
+					for (size_t j = 0; j < MaxShelfItems; ++j) {
+						uint8_t kind = 0;
+						if (!reader.Read(kind) || kind > static_cast<uint8_t>(Item::Boots))
+							return;
+						ShelfItemView& item = view.items[j];
+						item.item = static_cast<Item>(kind);
+						if (item.item == Item::None)
+							continue;
+
+						olc::vf2d local;
+						float angle = 0.0f;
+						if (!reader.Read(local.x) || !reader.Read(local.y) || !reader.Read(angle)
+							|| !std::isfinite(local.x) || !std::isfinite(local.y)
+							|| !std::isfinite(angle) || std::abs(local.x) > 500.0f
+							|| std::abs(local.y) > 500.0f)
+							return;
+						item.body = CreateItemBody(item.item, local);
+						item.body.angle = angle;
+						item.previousPosition = local;
+						item.previousAngle = angle;
+					}
+				}
+				chunk.shelves[i] = view;
+			}
 		}
 		else if (!Net::ReadRagdoll(reader, chunk.id, chunk.ragdoll) || chunk.id == 0 || chunk.id > MaxPlayers)
 			return;
@@ -480,6 +617,26 @@ namespace Trauma {
 		predictedBodies = std::move(receivedBodies);
 		players = std::move(received);
 		worldItems = snapshotChunks[count - 1].items;
+		for (size_t i = 0; i < MaxShelves; ++i) {
+			ShelfView incoming = snapshotChunks[count - 1].shelves[i];
+			if (shelves[i].active && incoming.active) {
+				incoming.previousPosition = shelves[i].position;
+				for (size_t j = 0; j < MaxShelfItems; ++j) {
+					const bool hadItem = shelves[i].items[j].item != Item::None;
+					incoming.items[j].previousPosition = hadItem
+						? shelves[i].items[j].body.position : incoming.items[j].body.position;
+					incoming.items[j].previousAngle = hadItem
+						? shelves[i].items[j].body.angle : incoming.items[j].body.angle;
+				}
+			} else {
+				incoming.previousPosition = incoming.position;
+				for (size_t j = 0; j < MaxShelfItems; ++j) {
+					incoming.items[j].previousPosition = incoming.items[j].body.position;
+					incoming.items[j].previousAngle = incoming.items[j].body.angle;
+				}
+			}
+			shelves[i] = incoming;
+		}
 		Reconcile(authoritative, authoritative.parts[Torso].lastInput);
 		snapshotTimer = 0.0f;
 	}

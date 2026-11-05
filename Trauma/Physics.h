@@ -227,7 +227,7 @@ namespace Trauma {
 		std::vector<PhysicsRig> rigs;
 	};
 
-	inline void ResetWorld(PhysicsWorld& physics) {
+	inline void DestroyWorld(PhysicsWorld& physics) {
 		for (PhysicsBody& entry : physics.bodies)
 			if (b2Body_IsValid(entry.body))
 				b2DestroyBody(entry.body);
@@ -241,6 +241,11 @@ namespace Trauma {
 
 		if (b2World_IsValid(physics.world))
 			b2DestroyWorld(physics.world);
+		physics.world = b2_nullWorldId;
+	}
+
+	inline void ResetWorld(PhysicsWorld& physics) {
+		DestroyWorld(physics);
 
 		b2WorldDef def = b2DefaultWorldDef();
 		def.gravity = { 0.0f, Gravity };

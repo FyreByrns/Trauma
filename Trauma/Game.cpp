@@ -72,6 +72,8 @@ namespace Trauma {
 		if (keyboard.GetKey(olc::Key::ESCAPE).bPressed) {
 			paused = !paused;
 			dropMode = false;
+			shelfMode = false;
+			movingShelfActive = false;
 		}
 
 		UpdateClientInput(deltaTime);
@@ -102,6 +104,8 @@ namespace Trauma {
 		paused = false;
 		drag = ItemDrag{};
 		dropMode = false;
+		shelfMode = false;
+		movingShelfActive = false;
 	}
 
 	void Game::UpdateClientInput(float deltaTime) {
@@ -114,6 +118,8 @@ namespace Trauma {
 			jumpQueued = false;
 			drag = ItemDrag{};
 			dropMode = false;
+			shelfMode = false;
+			movingShelfActive = false;
 			return;
 		}
 
@@ -145,13 +151,17 @@ namespace Trauma {
 			olc::Key::K1, olc::Key::K2, olc::Key::K3, olc::Key::K4, olc::Key::K5,
 			olc::Key::K6, olc::Key::K7, olc::Key::K8, olc::Key::K9, olc::Key::K0 };
 		for (size_t i = 0; i < slotKeys.size(); ++i)
-			if (keyboard.GetKey(slotKeys[i]).bPressed)
+			if (keyboard.GetKey(slotKeys[i]).bPressed) {
 				hotbarSelection = static_cast<uint8_t>(i);
+				dropMode = false;
+				shelfMode = false;
+				movingShelfActive = false;
+			}
 
 		if (keyboard.GetKey(olc::Key::E).bPressed) {
-			size_t index = 0;
-			if (client.GetPickupCandidate(index))
-				client.PickupItem(index);
+			Client::PickupTarget target;
+			if (client.GetPickupCandidate(target))
+				client.PickupItem(target);
 		}
 	}
 
@@ -161,15 +171,48 @@ namespace Trauma {
 	}
 
 	void Game::UpdateDropMode() {
+		const Item selected = client.GetLocalRagdoll().inventory.hotbar[hotbarSelection];
 		if (keyboard.GetKey(olc::Key::Q).bPressed) {
-			const bool hasItem = client.GetLocalRagdoll().inventory.hotbar[hotbarSelection] != Item::None;
-			dropMode = !dropMode && hasItem;
+			if (selected == Item::Shelf) {
+				shelfMode = !shelfMode;
+				dropMode = false;
+			} else {
+				dropMode = !dropMode && selected != Item::None;
+				shelfMode = false;
+			}
+			movingShelfActive = false;
+		}
+
+		if (shelfMode) {
+			if (selected != Item::Shelf) {
+				shelfMode = false;
+				movingShelfActive = false;
+				return;
+			}
+
+			if (dropPreview.active && !Ui::WantsMouse() && mouse.GetButton(0).bPressed) {
+				if (movingShelfActive) {
+					client.MoveShelf(movingShelf, dropPreview.position);
+					movingShelfActive = false;
+				} else {
+					const olc::vf2d cursor = camera.GetWorldTransform().inverse(mouse.GetPosition());
+					const int index = client.ShelfAt(cursor);
+					const olc::vf2d hand = DropHandOrigin(client.GetLocalRagdoll(), cursor);
+					if (index >= 0 && (client.GetShelves()[index].position - hand).mag() <= ShelfPlaceRange) {
+						movingShelf = static_cast<uint8_t>(index);
+						movingShelfActive = true;
+					} else {
+						client.PlaceShelf(dropPreview.position);
+					}
+				}
+			}
+			return;
 		}
 
 		if (!dropMode)
 			return;
 
-		if (client.GetLocalRagdoll().inventory.hotbar[hotbarSelection] == Item::None) {
+		if (selected == Item::None) {
 			dropMode = false;
 			return;
 		}
@@ -185,7 +228,8 @@ namespace Trauma {
 		const Item item = drag.active
 			? drag.item
 			: client.GetLocalRagdoll().inventory.hotbar[hotbarSelection];
-		if ((!drag.active && !dropMode) || item == Item::None)
+		const bool shelfPreview = drag.active ? drag.item == Item::Shelf : shelfMode;
+		if ((!drag.active && !dropMode && !shelfPreview) || item == Item::None)
 			return;
 
 		const olc::vf2d pointer = mouse.GetPosition();
@@ -194,15 +238,30 @@ namespace Trauma {
 			return;
 
 		const olc::vf2d target = camera.GetWorldTransform().inverse(pointer);
+		const olc::vf2d hand = DropHandOrigin(client.GetLocalRagdoll(), target);
+		if (shelfPreview) {
+			olc::vf2d offset = target - hand;
+			const float distance = offset.mag();
+			if (distance > ShelfPlaceRange)
+				offset *= ShelfPlaceRange / distance;
+			dropPreview.active = true;
+			dropPreview.item = Item::Shelf;
+			dropPreview.shelf = true;
+			dropPreview.position = hand + offset;
+			dropPreview.moving = movingShelfActive;
+			dropPreview.movingShelf = movingShelf;
+			return;
+		}
+
 		const ObjectState ghost = CreateItemBody(item, target);
 		if (ghost.radius <= 0.0f)
 			return;
 
 		std::array<ObjectState, MaxWorldItems + MaxPlayers> obstacles{};
 		size_t obstacleCount = 0;
-		for (const Client::WorldItem& item : client.GetWorldItems())
-			if (item.item != Item::None && obstacleCount < obstacles.size())
-				obstacles[obstacleCount++] = item.body;
+		for (const Client::WorldItem& worldItem : client.GetWorldItems())
+			if (worldItem.item != Item::None && obstacleCount < obstacles.size())
+				obstacles[obstacleCount++] = worldItem.body;
 		for (const Client::ObjectView& view : client.GetObjects()) {
 			if (obstacleCount >= obstacles.size())
 				break;
@@ -217,7 +276,6 @@ namespace Trauma {
 				1.0f, view.angle);
 		}
 
-		const olc::vf2d hand = DropHandOrigin(client.GetLocalRagdoll(), target);
 		olc::vf2d offset = target - hand;
 		const float distance = offset.mag();
 		if (distance > DropOffset)
@@ -263,7 +321,7 @@ namespace Trauma {
 		const olc::vf2d aim = mouseWorld - client.GetLocalRagdoll().parts[Torso].position;
 		input.aim = { std::clamp(aim.x, -2000.0f, 2000.0f), std::clamp(aim.y, -2000.0f, 2000.0f) };
 
-		if ((drag.active || dropMode) && dropPreview.active) {
+		if ((drag.active || dropMode || shelfMode) && dropPreview.active) {
 			input.reachLeft = false;
 			input.reachRight = true;
 			input.grab = false;
@@ -345,6 +403,24 @@ namespace Trauma {
 		}
 		for (const Terrain& terrain : TestTerrain())
 			draw.FilledRect(terrain.pos, terrain.size, olc::Pixel(65, 80, 95));
+
+		const float alpha = std::clamp(fixedAccumulator / FixedDeltaTime, 0.0f, 1.0f);
+		for (size_t index = 0; index < MaxShelves; ++index) {
+			const Client::ShelfView& shelf = client.GetShelves()[index];
+			if (!shelf.active || (movingShelfActive && index == movingShelf && dropPreview.active))
+				continue;
+			const olc::vf2d shelfPosition = shelf.previousPosition.lerp(shelf.position, alpha);
+			DrawShelfBoards(shelfPosition, olc::Pixel(135, 98, 62));
+			for (const Client::ShelfItemView& item : shelf.items) {
+				if (item.item == Item::None)
+					continue;
+				ObjectState body = item.body;
+				body.position = shelfPosition + item.previousPosition.lerp(item.body.position, alpha);
+				body.angle = item.previousAngle
+					+ std::remainder(item.body.angle - item.previousAngle, TwoPi) * alpha;
+				DrawItem(item.item, body);
+			}
+		}
 
 		DrawObjects();
 
@@ -432,9 +508,35 @@ namespace Trauma {
 			draw.FilledTriangle(vertices[0], vertices[i], vertices[i + 1], ItemColour(item));
 	}
 
+	void Game::DrawShelfBoards(const olc::vf2d& position, olc::Pixel colour) {
+		const olc::Pixel edge(65, 45, 28);
+		for (const ObjectState& board : ShelfBoards()) {
+			const olc::vf2d topLeft = position + board.position - board.halfExtents;
+			const olc::vf2d size = board.halfExtents * 2.0f;
+			draw.FilledRect(topLeft, size, colour);
+			draw.Line(topLeft, topLeft + olc::vf2d{ size.x, 0.0f }, edge);
+		}
+	}
+
 	void Game::DrawDropPreview() {
 		if (!dropPreview.active)
 			return;
+
+		if (dropPreview.shelf) {
+			DrawShelfBoards(dropPreview.position, olc::Pixel(225, 235, 245));
+			if (dropPreview.moving && dropPreview.movingShelf < MaxShelves) {
+				const Client::ShelfView& shelf = client.GetShelves()[dropPreview.movingShelf];
+				if (shelf.active)
+					for (const Client::ShelfItemView& item : shelf.items) {
+						if (item.item == Item::None)
+							continue;
+						ObjectState body = item.body;
+						body.position += dropPreview.position;
+						DrawItem(item.item, body);
+					}
+			}
+			return;
+		}
 
 		const ObjectState body = CreateItemBody(dropPreview.item, dropPreview.position);
 		if (body.radius <= 0.0f)
@@ -473,17 +575,37 @@ namespace Trauma {
 	}
 
 	void Game::BuildPickupLabel() {
-		size_t index = 0;
-		if (!client.GetPickupCandidate(index))
+		Client::PickupTarget target;
+		if (!client.GetPickupCandidate(target))
 			return;
 
-		const Client::WorldItem& item = client.GetWorldItems()[index];
-		if (item.item == Item::None)
+		Item item = Item::None;
+		olc::vf2d worldPosition;
+		float radius = 0.0f;
+		if (target.shelf) {
+			if (target.index >= MaxShelves || target.item >= MaxShelfItems)
+				return;
+			const Client::ShelfView& shelf = client.GetShelves()[target.index];
+			if (!shelf.active)
+				return;
+			const Client::ShelfItemView& view = shelf.items[target.item];
+			item = view.item;
+			worldPosition = shelf.position + view.body.position;
+			radius = view.body.radius;
+		} else {
+			if (target.index >= MaxWorldItems)
+				return;
+			const Client::WorldItem& view = client.GetWorldItems()[target.index];
+			item = view.item;
+			worldPosition = view.body.position;
+			radius = view.body.radius;
+		}
+		if (item == Item::None)
 			return;
 
 		const olc::vf2d screen = camera.GetWorldTransform().forwardRound(
-			item.body.position - olc::vf2d{ 0.0f, item.body.radius + 10.0f });
-		const char* name = ItemName(item.item);
+			worldPosition - olc::vf2d{ 0.0f, radius + 10.0f });
+		const char* name = ItemName(item);
 		const ImVec2 size = ImGui::CalcTextSize(name);
 		const ImVec2 position(screen.x - size.x * 0.5f, screen.y - size.y);
 		ImDrawList* foreground = ImGui::GetForegroundDrawList();
@@ -544,6 +666,8 @@ namespace Trauma {
 					client.MoveItem(false, hotbarSelection, false, index);
 				hotbarSelection = static_cast<uint8_t>(index);
 				dropMode = false;
+				shelfMode = false;
+				movingShelfActive = false;
 			}
 			if (result.dropped) {
 				client.MoveItem(result.payload.clothing, result.payload.index, false, index);
@@ -649,8 +773,12 @@ namespace Trauma {
 		if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left))
 			return;
 
-		if (!dragDelivered && dropPreview.active)
-			client.DropItem(drag.clothing, drag.index, dropPreview.position);
+		if (!dragDelivered && dropPreview.active) {
+			if (drag.item == Item::Shelf)
+				client.PlaceShelf(dropPreview.position);
+			else
+				client.DropItem(drag.clothing, drag.index, dropPreview.position);
+		}
 		drag = ItemDrag{};
 	}
 

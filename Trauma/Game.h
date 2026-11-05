@@ -31,6 +31,9 @@ namespace Trauma {
 			bool active = false;
 			olc::vf2d position;
 			Item item = Item::None;
+			bool shelf = false;
+			bool moving = false;
+			uint8_t movingShelf = 0;
 		};
 
 		bool UpdatePlay(float fElapsedTime);
@@ -55,6 +58,7 @@ namespace Trauma {
 			float angle, olc::Pixel colour);
 		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
 		void DrawItem(Item item, const ObjectState& body);
+		void DrawShelfBoards(const olc::vf2d& position, olc::Pixel colour);
 		void DrawDropPreview();
 		void DrawItemGhost(Item item);
 
@@ -93,6 +97,9 @@ namespace Trauma {
 		ItemDrag drag;
 		bool dragDelivered = false;
 		bool dropMode = false;
+		bool shelfMode = false;
+		bool movingShelfActive = false;
+		uint8_t movingShelf = 0;
 		olc::vf2d hudMin;
 		olc::vf2d hudMax;
 		DropPreview dropPreview;

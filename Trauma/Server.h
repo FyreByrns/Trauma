@@ -41,6 +41,14 @@ namespace Trauma {
 			std::chrono::steady_clock::time_point lastSeen;
 		};
 
+		struct Shelf {
+			bool active = false;
+			olc::vf2d position;
+			PhysicsWorld physics;
+			std::array<ObjectState, MaxShelfItems> items{};
+			std::array<Item, MaxShelfItems> kinds{};
+		};
+
 		bool Open(uint16_t port);
 		void Loop();
 		void PollPackets();
@@ -57,6 +65,11 @@ namespace Trauma {
 		bool HandleInventoryMove(ClientSlot& client, Net::PacketReader& reader);
 		bool HandleInventoryDrop(ClientSlot& client, Net::PacketReader& reader);
 		bool HandleInventoryPickup(ClientSlot& client, Net::PacketReader& reader);
+		bool HandleShelfPickup(ClientSlot& client, Net::PacketReader& reader);
+		void HandleShelf(const Net::Endpoint& endpoint, Net::PacketReader& reader);
+		void ClearShelves();
+		void StepShelves();
+		void CreateShelf(Shelf& shelf, const olc::vf2d& position);
 		void SendWelcome(const ClientSlot& client);
 
 	private:
@@ -66,6 +79,7 @@ namespace Trauma {
 		std::array<ObjectState, TestBodyCount> bodies;
 		std::array<ObjectState, MaxWorldItems> items;
 		std::array<Item, MaxWorldItems> itemKinds{};
+		std::array<Shelf, MaxShelves> shelves{};
 		std::thread worker;
 		std::atomic<bool> running = false;
 		uint32_t tick = 0;

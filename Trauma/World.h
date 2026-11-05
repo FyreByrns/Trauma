@@ -28,6 +28,48 @@ namespace Trauma {
 		return ladders;
 	}
 
+	constexpr int MaxShelves = 4;
+	constexpr int MaxShelfItems = 8;
+	constexpr float ShelfHalfWidth = 22.0f;
+	constexpr float ShelfBoardHalfHeight = 2.5f;
+	constexpr float ShelfBoardSpacing = 28.0f;
+	constexpr float ShelfSlotHalfWidth = 20.0f;
+	constexpr float ShelfPlaceRange = 64.0f;
+	constexpr float ShelfPickTop = -58.0f;
+	constexpr float ShelfPickBottom = 5.0f;
+
+	inline std::array<ObjectState, 2> ShelfBoards() {
+		return { CreateBox({ 0.0f, ShelfBoardHalfHeight }, { ShelfHalfWidth, ShelfBoardHalfHeight }, 0.0f),
+			CreateBox({ 0.0f, -ShelfBoardSpacing + ShelfBoardHalfHeight },
+				{ ShelfHalfWidth, ShelfBoardHalfHeight }, 0.0f) };
+	}
+
+	inline bool ShelfSlotAt(const olc::vf2d& local, float& boardTop) {
+		if (std::abs(local.x) > ShelfSlotHalfWidth)
+			return false;
+		if (local.y >= -23.0f && local.y <= 0.0f) {
+			boardTop = 0.0f;
+			return true;
+		}
+		if (local.y >= -58.0f && local.y <= -28.0f) {
+			boardTop = -ShelfBoardSpacing;
+			return true;
+		}
+		return false;
+	}
+
+	inline bool ShelfLocalPlacement(const olc::vf2d& world, const olc::vf2d& shelf, float radius,
+		olc::vf2d& local) {
+		local = world - shelf;
+		float boardTop = 0.0f;
+		if (!ShelfSlotAt(local, boardTop))
+			return false;
+		const float margin = std::min(radius, 10.0f);
+		local.x = std::clamp(local.x, -ShelfSlotHalfWidth + margin, ShelfSlotHalfWidth - margin);
+		local.y = boardTop - radius - 1.0f;
+		return true;
+	}
+
 	constexpr float DropClearance = 2.0f;
 
 	inline ObjectState StaticTerrain(const Terrain& terrain) {

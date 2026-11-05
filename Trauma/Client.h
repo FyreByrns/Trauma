@@ -34,6 +34,26 @@ namespace Trauma {
 			ObjectState body;
 		};
 
+		struct ShelfItemView {
+			Item item = Item::None;
+			ObjectState body;
+			olc::vf2d previousPosition;
+			float previousAngle = 0.0f;
+		};
+
+		struct ShelfView {
+			bool active = false;
+			olc::vf2d position;
+			olc::vf2d previousPosition;
+			std::array<ShelfItemView, MaxShelfItems> items{};
+		};
+
+		struct PickupTarget {
+			bool shelf = false;
+			uint8_t index = 0;
+			uint8_t item = 0;
+		};
+
 		Client() = default;
 		~Client();
 		Client(const Client&) = delete;
@@ -50,10 +70,15 @@ namespace Trauma {
 		bool GetRemotePose(uint8_t id, float alpha, std::array<olc::vf2d, PartCount>& pose, float& facing) const;
 		const std::vector<ObjectView>& GetObjects() const;
 		const std::array<WorldItem, MaxWorldItems>& GetWorldItems() const;
+		const std::array<ShelfView, MaxShelves>& GetShelves() const;
+		int ShelfAt(const olc::vf2d& position) const;
+		bool IsShelfDrop(const olc::vf2d& position) const;
+		void PlaceShelf(const olc::vf2d& position);
+		void MoveShelf(uint8_t index, const olc::vf2d& position);
 		void MoveItem(bool fromClothing, size_t from, bool toClothing, size_t to);
 		void DropItem(bool fromClothing, size_t index, const olc::vf2d& position);
-		bool GetPickupCandidate(size_t& index) const;
-		void PickupItem(size_t index);
+		bool GetPickupCandidate(PickupTarget& target) const;
+		void PickupItem(const PickupTarget& target);
 		bool GetPredictedBody(uint8_t id, float alpha, olc::vf2d& position, float& angle) const;
 
 	private:
@@ -74,6 +99,7 @@ namespace Trauma {
 			RagdollState ragdoll;
 			std::array<ObjectState, TestBodyCount> objects;
 			std::array<WorldItem, MaxWorldItems> items{};
+			std::array<ShelfView, MaxShelves> shelves{};
 		};
 
 		struct PredictedBody {
@@ -117,6 +143,7 @@ namespace Trauma {
 		uint8_t assemblingCount = 0;
 		std::vector<ObjectView> players;
 		std::array<WorldItem, MaxWorldItems> worldItems{};
+		std::array<ShelfView, MaxShelves> shelves{};
 		std::deque<SentInput> pending;
 		std::deque<PhysicsSnapshot> snapshots;
 		uint32_t nextInputSequence = 1;

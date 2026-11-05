@@ -7,7 +7,7 @@
 namespace Trauma {
 
 	enum class Item : uint8_t {
-		None, Wrench, Flashlight, Medkit, OxygenTank, Suit, Helmet, Boots
+		None, Wrench, Flashlight, Medkit, OxygenTank, Suit, Helmet, Boots, Shelf
 	};
 
 	enum class ClothingSlot : size_t {
@@ -36,6 +36,7 @@ namespace Trauma {
 			case Item::Suit: return "diving suit";
 			case Item::Helmet: return "helmet";
 			case Item::Boots: return "boots";
+			case Item::Shelf: return "shelf";
 			default: return "";
 		}
 	}
@@ -58,6 +59,7 @@ namespace Trauma {
 			case Item::Suit: return olc::Pixel(70, 140, 120);
 			case Item::Helmet: return olc::Pixel(120, 160, 200);
 			case Item::Boots: return olc::Pixel(120, 100, 80);
+			case Item::Shelf: return olc::Pixel(150, 110, 65);
 			default: return olc::Pixel(60, 70, 80);
 		}
 	}
@@ -68,6 +70,7 @@ namespace Trauma {
 		inventory.hotbar[1] = Item::Flashlight;
 		inventory.hotbar[2] = Item::Medkit;
 		inventory.hotbar[3] = Item::OxygenTank;
+		inventory.hotbar[4] = Item::Shelf;
 		inventory.clothing[static_cast<size_t>(ClothingSlot::Head)] = Item::Helmet;
 		inventory.clothing[static_cast<size_t>(ClothingSlot::Body)] = Item::Suit;
 		inventory.clothing[static_cast<size_t>(ClothingSlot::Feet)] = Item::Boots;
@@ -126,8 +129,16 @@ namespace Trauma {
 			case Item::Suit: return CreateBox(position, { 8.0f, 9.0f }, 0.6f);
 			case Item::Helmet: return CreateBox(position, { 6.0f, 6.0f }, 0.5f);
 			case Item::Boots: return CreateBox(position, { 6.0f, 4.0f }, 0.5f);
+			case Item::Shelf: return CreateBox(position, { 10.0f, 4.0f }, 0.6f);
 			default: return DeadItemBody();
 		}
+	}
+
+	inline bool HasShelfTool(const Inventory& inventory) {
+		for (const Item item : inventory.hotbar)
+			if (item == Item::Shelf)
+				return true;
+		return false;
 	}
 
 }

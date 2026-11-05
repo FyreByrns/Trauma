@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 15;
+	constexpr uint32_t ProtocolVersion = 16;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -19,13 +19,20 @@ namespace Trauma::Net {
 		Welcome = 2,
 		Input = 3,
 		Snapshot = 4,
-		Inventory = 5
+		Inventory = 5,
+		Shelf = 6
 	};
 
 	enum class InventoryAction : uint8_t {
 		Move = 0,
 		Drop = 1,
-		Pickup = 2
+		Pickup = 2,
+		ShelfPickup = 3
+	};
+
+	enum class ShelfAction : uint8_t {
+		Place = 0,
+		Move = 1
 	};
 
 	class PacketWriter {
@@ -222,6 +229,25 @@ namespace Trauma::Net {
 		packet.Write(index);
 	}
 
+	inline void WriteShelfPickup(PacketWriter& packet, uint8_t shelf, uint8_t item) {
+		packet.Write(static_cast<uint8_t>(InventoryAction::ShelfPickup));
+		packet.Write(shelf);
+		packet.Write(item);
+	}
+
+	inline void WriteShelfPlace(PacketWriter& packet, const olc::vf2d& position) {
+		packet.Write(static_cast<uint8_t>(ShelfAction::Place));
+		packet.Write(position.x);
+		packet.Write(position.y);
+	}
+
+	inline void WriteShelfMove(PacketWriter& packet, uint8_t shelf, const olc::vf2d& position) {
+		packet.Write(static_cast<uint8_t>(ShelfAction::Move));
+		packet.Write(shelf);
+		packet.Write(position.x);
+		packet.Write(position.y);
+	}
+
 	inline void WriteWorldItems(PacketWriter& packet, const std::array<Item, MaxWorldItems>& kinds,
 		const std::array<ObjectState, MaxWorldItems>& bodies) {
 		packet.Write(static_cast<uint8_t>(MaxWorldItems));
@@ -281,7 +307,7 @@ namespace Trauma::Net {
 				return false;
 		for (Item& item : ragdoll.inventory.hotbar) {
 			uint8_t stored = 0;
-			if (!reader.Read(stored) || stored > static_cast<uint8_t>(Item::Boots))
+			if (!reader.Read(stored) || stored > static_cast<uint8_t>(Item::Shelf))
 				return false;
 			item = static_cast<Item>(stored);
 		}
