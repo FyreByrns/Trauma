@@ -69,19 +69,25 @@ namespace Trauma {
 				ragdoll.crouchTurn = 0.3f;
 			ragdoll.facing = value;
 		};
-		if (std::abs(input.moveX) > 0.01f) {
-			turnTo(input.moveX > 0.0f ? 1.0f : -1.0f);
-			const float rate = movement == MovementState::Running ? 14.0f : movement == MovementState::Crawling ? 6.0f : 10.0f;
-			ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * rate * std::min(std::abs(input.moveX), 1.0f), TwoPi);
-		}
-		else if ((input.reachLeft || input.reachRight) && std::abs(input.aim.x) > 0.01f) {
+		if (std::abs(input.aim.x) > 0.01f)
 			turnTo(input.aim.x > 0.0f ? 1.0f : -1.0f);
+		const bool backward = std::abs(input.moveX) > 0.01f
+			&& input.moveX * ragdoll.facing < 0.0f;
+		if (std::abs(input.moveX) > 0.01f) {
+			const float rate = movement == MovementState::Running ? 14.0f : movement == MovementState::Crawling ? 6.0f : 10.0f;
+			const float gaitScale = backward && movement != MovementState::Crawling ? BackwardGaitFactor : 1.0f;
+			ragdoll.gaitPhase = std::fmod(ragdoll.gaitPhase + FixedDeltaTime * rate * gaitScale
+				* std::min(std::abs(input.moveX), 1.0f), TwoPi);
 		}
 
 		if (std::abs(input.moveX) > 0.01f || (input.jump && grounded)) {
 			const b2BodyId torso = EnsureBody(physics, ragdoll.parts[Torso], group);
 			const float torsoSpeed = b2Body_GetLinearVelocity(torso).x;
-			const float targetSpeed = std::clamp(input.moveX, -1.0f, 1.0f) * MovementSpeed(movement);
+			float targetSpeed = std::clamp(input.moveX, -1.0f, 1.0f) * MovementSpeed(movement);
+			if (backward && movement != MovementState::Crawling)
+				targetSpeed *= BackwardMoveFactor;
+			if (movement == MovementState::Running && IsGunAiming(ragdoll))
+				targetSpeed *= AimingRunMoveFactor;
 			const float change = std::abs(input.moveX) > 0.01f
 				? std::clamp(targetSpeed - torsoSpeed, -30.0f, 30.0f) : 0.0f;
 			for (size_t i = 0; i < PartCount; ++i) {

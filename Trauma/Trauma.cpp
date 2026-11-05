@@ -1,6 +1,7 @@
 #define OLC_PGE3_APPLICATION
 #include "Game.h"
 #include "Items.h"
+#include "MovementProbe.h"
 #include "Network.h"
 #include "Server.h"
 #include <charconv>
@@ -57,6 +58,9 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
+	if (argc > 1 && std::string(argv[1]) == "--movement-probe")
+		return Trauma::RunMovementProbe() ? 0 : 1;
+
 	Trauma::Net::Network network;
 	if (!network.IsReady()) {
 		std::cout << "failed to initialise winsock" << std::endl;
@@ -101,7 +105,7 @@ int main(int argc, char** argv) {
 
 	if (!valid) {
 		std::cout << "improper usage or malformed arguments:" << std::endl;
-		std::cout << "usage: Trauma [--server | --connect HOST] [--port PORT]" << std::endl;
+		std::cout << "usage: Trauma [--server | --connect HOST | --movement-probe] [--port PORT]" << std::endl;
 		return 1;
 	}
 

@@ -15,6 +15,11 @@ namespace Trauma {
 	constexpr float PoseMaxVelocity = 700.0f;
 	constexpr float PoseMaxForce = 12000.0f;
 	constexpr float HipsPoseMaxForce = PoseMaxForce * 4.0f;
+	constexpr float WalkArmBob = 2.0f;
+	constexpr float RunArmBob = 4.5f;
+	constexpr float AimingArmBobScale = 1.2f;
+	constexpr float BackwardArmBobScale = 0.7f;
+	constexpr float AimBobPerPixel = 0.012f;
 
 	constexpr float GripSpringHertz = 20.0f;
 	constexpr float GripSpringDamping = 1.0f;
@@ -110,21 +115,56 @@ namespace Trauma {
 		return (mask & 2) != 0 ? 1 : 0;
 	}
 
+	inline ItemId SelectedHotbarItem(const RagdollState& ragdoll) {
+		const size_t selected = ragdoll.inventory.selected;
+		return selected < ragdoll.inventory.hotbar.size()
+			? ragdoll.inventory.hotbar[selected].item : ItemNone;
+	}
+
+	inline bool IsGunAiming(const RagdollState& ragdoll) {
+		return ragdoll.input.reachRight && IsGun(SelectedHotbarItem(ragdoll));
+	}
+
 	inline bool GunFollowsHand(const RagdollState& ragdoll) {
 		return ragdoll.ladder != 0
 			|| (!ragdoll.input.reachRight
 				&& GetMovementState(ragdoll.input) == MovementState::Crawling);
 	}
 
+	inline bool MovingBackward(const RagdollState& ragdoll) {
+		return std::abs(ragdoll.input.moveX) > 0.01f
+			&& ragdoll.input.moveX * ragdoll.facing < 0.0f;
+	}
+
+	inline float ArmBob(const RagdollState& ragdoll) {
+		const MovementState movement = GetMovementState(ragdoll.input);
+		if (ragdoll.ladder != 0 || movement == MovementState::Crawling)
+			return 0.0f;
+		const float stride = std::clamp(std::abs(ragdoll.input.moveX), 0.0f, 1.0f);
+		if (stride < 0.01f)
+			return 0.0f;
+		const float amplitude = movement == MovementState::Running ? RunArmBob : WalkArmBob;
+		const float aiming = IsGunAiming(ragdoll) ? AimingArmBobScale : 1.0f;
+		const float backward = MovingBackward(ragdoll) ? BackwardArmBobScale : 1.0f;
+		return std::sin(ragdoll.gaitPhase * 2.0f) * amplitude * stride * aiming * backward;
+	}
+
+	inline float AimBob(const RagdollState& ragdoll) {
+		if (GunFollowsHand(ragdoll))
+			return 0.0f;
+		return ArmBob(ragdoll) * AimBobPerPixel;
+	}
+
 	inline olc::vf2d HeldItemDirection(const std::array<olc::vf2d, PartCount>& pose,
 		const InputState& input, float facing, bool leftHand, ItemId item, float recoil = 0.0f,
-		bool followHand = false) {
+		bool followHand = false, float aimBob = 0.0f) {
 		const bool gun = IsGun(item);
 		olc::vf2d direction = gun && !followHand ? input.aim
 			: pose[leftHand ? LeftHand : RightHand] - pose[leftHand ? LeftElbow : RightElbow];
 		if (direction.mag2() < 0.0001f)
 			direction = { facing, 0.0f };
-		const float angle = std::atan2(direction.y, direction.x) + (gun ? recoil : 0.0f);
+		const float angle = std::atan2(direction.y, direction.x)
+			+ (gun ? recoil + (followHand ? 0.0f : aimBob) : 0.0f);
 		return Rotate({ 1.0f, 0.0f }, angle);
 	}
 
@@ -172,7 +212,7 @@ namespace Trauma {
 			pose[i] = ragdoll.parts[i].position;
 		const bool leftHand = ItemPrimaryArm(handMask) == 0;
 		const olc::vf2d unit = HeldItemDirection(pose, ragdoll.input, ragdoll.facing,
-			leftHand, item, ragdoll.gunRecoil, GunFollowsHand(ragdoll));
+			leftHand, item, ragdoll.gunRecoil, GunFollowsHand(ragdoll), AimBob(ragdoll));
 		const olc::vf2d hand = pose[leftHand ? LeftHand : RightHand];
 		const olc::vf2d center = hand + unit * HeldItemCenterOffset(item);
 		const float bodyAngle = std::atan2(unit.y, unit.x);
@@ -208,7 +248,7 @@ namespace Trauma {
 			pose[i] = ragdoll.parts[i].position;
 		const bool leftHand = ItemPrimaryArm(handMask) == 0;
 		const olc::vf2d base = HeldItemDirection(pose, ragdoll.input, ragdoll.facing, leftHand,
-			item, 0.0f, GunFollowsHand(ragdoll));
+			item, 0.0f, GunFollowsHand(ragdoll), AimBob(ragdoll));
 		const float cross = base.x * recoil.direction.y - base.y * recoil.direction.x;
 		return recoil.amount * cross;
 	}
@@ -247,7 +287,11 @@ namespace Trauma {
 		const olc::vf2d torso = ragdoll.parts[Torso].position;
 		const MovementState movement = GetMovementState(ragdoll.input);
 		const float stride = std::clamp(std::abs(ragdoll.input.moveX), 0.0f, 1.0f);
-		const float swing = std::sin(ragdoll.gaitPhase) * stride;
+		const bool backward = MovingBackward(ragdoll);
+		const float travel = backward && movement != MovementState::Crawling ? -1.0f : 1.0f;
+		const float swing = std::sin(ragdoll.gaitPhase) * stride * travel;
+		const float armBob = ArmBob(ragdoll);
+		const olc::vf2d armBobOffset = { 0.0f, armBob };
 
 		std::array<olc::vf2d, PartCount> targets;
 		for (size_t i = 0; i < PartCount; ++i) {
@@ -315,7 +359,7 @@ namespace Trauma {
 		const olc::vf2d aimDirection = ragdoll.input.aim.mag2() > 0.0001f
 			? ragdoll.input.aim.norm() : olc::vf2d{ facing, 0.0f };
 		const float aimAngle = std::atan2(aimDirection.y, aimDirection.x)
-			+ (holdingGun ? ragdoll.gunRecoil : 0.0f);
+			+ (holdingGun ? ragdoll.gunRecoil + AimBob(ragdoll) : 0.0f);
 
 		const olc::vf2d hip = targets[Hips];
 		for (int leg = 0; leg < 2; ++leg) {
@@ -346,19 +390,21 @@ namespace Trauma {
 			const float phase = arm == 0 ? -swing : swing;
 			olc::vf2d offset;
 			if (gunAiming && arm == heldArm)
-				offset = Rotate(gunPose.aimingHand, aimAngle);
+				offset = Rotate(gunPose.aimingHand, aimAngle) + armBobOffset;
 			else if (gunAiming && heldMask == 3)
-				offset = Rotate(gunPose.aimingHand, aimAngle) - Rotate({ 6.0f, 0.0f }, aimAngle);
+				offset = Rotate(gunPose.aimingHand, aimAngle) - Rotate({ 6.0f, 0.0f }, aimAngle)
+					+ armBobOffset;
 			else if (movement == MovementState::Crawling)
 				offset = olc::vf2d{ (12.0f + phase * 5.0f) * facing, 10.0f - std::max(0.0f, phase) * 2.0f };
 			else if (arm == heldArm)
-				offset = Rotate(gunPose.lowReadyHand, aimAngle);
+				offset = Rotate(gunPose.lowReadyHand, aimAngle) + armBobOffset;
 			else if (holdingGun && heldMask == 3)
-				offset = Rotate(gunPose.lowReadyHand, aimAngle) - Rotate({ 6.0f, 0.0f }, aimAngle);
+				offset = Rotate(gunPose.lowReadyHand, aimAngle) - Rotate({ 6.0f, 0.0f }, aimAngle)
+					+ armBobOffset;
 			else if (reaching && !holdingGun)
 				offset = ragdoll.input.aim;
 			else
-				offset = olc::vf2d{ (4.0f + phase * armSwing) * facing, 22.0f };
+				offset = olc::vf2d{ (4.0f + phase * armSwing) * facing, 22.0f } + armBobOffset;
 			const TwoBoneIkResult pose = SolveTwoBoneIk(torso, torso + offset,
 				RagdollJoints()[joint].length, RagdollJoints()[joint + 1].length, facing);
 			targets[elbow] = pose.joint;
@@ -639,7 +685,7 @@ namespace Trauma {
 				for (size_t i = 0; i < PartCount; ++i)
 					pose[i] = ragdoll.parts[i].position;
 				const olc::vf2d unit = HeldItemDirection(pose, ragdoll.input, ragdoll.facing,
-					arm == 0, selectedItem, ragdoll.gunRecoil, GunFollowsHand(ragdoll));
+					arm == 0, selectedItem, ragdoll.gunRecoil, GunFollowsHand(ragdoll), AimBob(ragdoll));
 				hand.angle = std::atan2(unit.y, unit.x);
 			}
 			grip = {};

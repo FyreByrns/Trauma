@@ -5,6 +5,9 @@
 namespace Trauma {
 	constexpr float MoveSpeed = 220.0f;
 	constexpr float JumpSpeed = 520.0f;
+	constexpr float BackwardMoveFactor = 0.65f;
+	constexpr float AimingRunMoveFactor = 0.45f;
+	constexpr float BackwardGaitFactor = 0.85f;
 
 	struct InputState {
 		float moveX = 0.0f;

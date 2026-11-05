@@ -646,7 +646,7 @@ namespace Trauma {
 				const RagdollPart hand = leftHand ? LeftHand : RightHand;
 				if (ragdoll->grips[leftHand ? 0 : 1].target == 0) {
 					const olc::vf2d unit = HeldItemDirection(pose, ragdoll->input, facing, leftHand,
-						held.item, ragdoll->gunRecoil, GunFollowsHand(*ragdoll));
+						held.item, ragdoll->gunRecoil, GunFollowsHand(*ragdoll), AimBob(*ragdoll));
 					ObjectState body = CreateItemBody(held.item,
 						pose[hand] + unit * HeldItemCenterOffset(held.item));
 					body.angle = std::atan2(unit.y, unit.x);
