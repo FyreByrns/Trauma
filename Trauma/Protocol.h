@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 22;
+	constexpr uint32_t ProtocolVersion = 24;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -220,7 +220,7 @@ namespace Trauma::Net {
 		uint8_t index = 0;
 		uint8_t depth = 0;
 		if (!reader.Read(kind) || !reader.Read(index) || !reader.Read(depth)
-			|| kind > static_cast<uint8_t>(SlotKind::Feet) || depth > MaxContainerDepth)
+			|| kind > static_cast<uint8_t>(SlotKind::Belt) || depth > MaxContainerDepth)
 			return false;
 		if (kind == static_cast<uint8_t>(SlotKind::Hotbar)) {
 			if (index >= HotbarSlots)
@@ -242,6 +242,7 @@ namespace Trauma::Net {
 	inline void WriteItemStack(PacketWriter& packet, const ItemStack& stack) {
 		packet.Write(stack.item);
 		packet.Write(stack.quantity);
+		packet.Write(stack.charge);
 		const bool hasContents = stack.item != ItemNone && stack.container
 			&& !IsItemContainerEmpty(stack);
 		packet.Write(static_cast<uint8_t>(hasContents ? 1 : 0));
@@ -254,13 +255,16 @@ namespace Trauma::Net {
 	inline bool ReadItemStack(PacketReader& reader, ItemStack& stack, size_t depth = 0) {
 		ItemId item = ItemNone;
 		uint8_t quantity = 0;
+		uint8_t charge = 0;
 		uint8_t hasContents = 0;
-		if (!reader.Read(item) || !reader.Read(quantity) || !reader.Read(hasContents) || hasContents > 1)
+		if (!reader.Read(item) || !reader.Read(quantity) || !reader.Read(charge)
+			|| !reader.Read(hasContents) || hasContents > 1)
 			return false;
 		if (item == ItemNone)
-			return quantity == 0 && hasContents == 0;
+			return quantity == 0 && charge == 0 && hasContents == 0;
 
-		if (!IsValidItemId(item) || quantity > ItemMaxQuantity(item))
+		if (!IsValidItemId(item) || quantity == 0 || quantity > ItemMaxStack(item)
+			|| charge > ItemMaxCharge(item))
 			return false;
 		const size_t capacity = ItemContainerCapacity(item);
 		if (capacity == 0 && hasContents != 0)
@@ -269,6 +273,7 @@ namespace Trauma::Net {
 		ItemStack parsed;
 		parsed.item = item;
 		parsed.quantity = quantity;
+		parsed.charge = charge;
 		if (capacity > 0) {
 			if (hasContents && depth >= MaxContainerDepth)
 				return false;
@@ -400,7 +405,8 @@ namespace Trauma::Net {
 			WriteItemStack(packet, stack);
 		for (const ItemStack& stack : ragdoll.inventory.clothing)
 			WriteItemStack(packet, stack);
-		packet.Write(ragdoll.inventory.shelfKits);
+		WriteItemStack(packet, ragdoll.inventory.back);
+		WriteItemStack(packet, ragdoll.inventory.belt);
 		packet.Write(ragdoll.inventory.selected);
 		for (const ObjectState& part : ragdoll.parts) {
 			packet.Write(part.position.x);
@@ -444,9 +450,18 @@ namespace Trauma::Net {
 				return false;
 			ragdoll.inventory.clothing[slot] = std::move(stack);
 		}
-		if (!reader.Read(ragdoll.inventory.shelfKits) || ragdoll.inventory.shelfKits > MaxShelfKits
-			|| (ragdoll.inventory.shelfKits == 0 && HasShelfTool(ragdoll.inventory)))
+		ItemStack back;
+		if (!ReadItemStack(reader, back)
+			|| (back.item != ItemNone
+				&& !SlotAcceptsStack(ragdoll.inventory, BackAddress(), back)))
 			return false;
+		ragdoll.inventory.back = std::move(back);
+		ItemStack belt;
+		if (!ReadItemStack(reader, belt)
+			|| (belt.item != ItemNone
+				&& !SlotAcceptsStack(ragdoll.inventory, BeltAddress(), belt)))
+			return false;
+		ragdoll.inventory.belt = std::move(belt);
 		if (!reader.Read(ragdoll.inventory.selected) || ragdoll.inventory.selected >= HotbarSlots)
 			return false;
 		for (ObjectState& part : ragdoll.parts) {

@@ -27,13 +27,15 @@ namespace Trauma {
 			{ "shelf", ItemTag::Shelf },
 			{ "tool", ItemTag::Tool },
 			{ "consumable", ItemTag::Consumable },
-			{ "ammo", ItemTag::Ammo }
+			{ "ammo", ItemTag::Ammo },
+			{ "large", ItemTag::Large },
+			{ "belt", ItemTag::Belt }
 		};
 
 		struct ItemCatalog {
 			std::vector<ItemDefinition> items;
 			std::unordered_map<std::string, ItemId> ids;
-			std::array<ItemTags, 4> rootTags{};
+			std::array<ItemTags, 6> rootTags{};
 			bool loaded = false;
 		};
 
@@ -239,18 +241,16 @@ namespace Trauma {
 				if (!ReadUInt8(maxStack, item.maxStack) || item.maxStack == 0)
 					return Fail(error, "item '" + item.name + "' has an invalid maxStack");
 			}
-			item.maxQuantity = item.maxStack;
-			if (const JsonValue* maxQuantity = value.Find("maxQuantity"); maxQuantity) {
-				if (!ReadUInt8(maxQuantity, item.maxQuantity) || item.maxQuantity == 0)
-					return Fail(error, "item '" + item.name + "' has an invalid maxQuantity");
+			if (const JsonValue* maxCharge = value.Find("maxCharge"); maxCharge) {
+				if (!ReadUInt8(maxCharge, item.maxCharge) || item.maxCharge == 0)
+					return Fail(error, "item '" + item.name + "' has an invalid maxCharge");
 			}
-			item.defaultQuantity = item.maxStack > 1 ? 1 : (item.maxQuantity > 1 ? item.maxQuantity : 0);
-			if (const JsonValue* defaultQuantity = value.Find("defaultQuantity"); defaultQuantity) {
-				if (!ReadUInt8(defaultQuantity, item.defaultQuantity))
-					return Fail(error, "item '" + item.name + "' has an invalid defaultQuantity");
+			if (const JsonValue* defaultCharge = value.Find("defaultCharge"); defaultCharge) {
+				if (!ReadUInt8(defaultCharge, item.defaultCharge))
+					return Fail(error, "item '" + item.name + "' has an invalid defaultCharge");
 			}
-			if (item.defaultQuantity > item.maxQuantity)
-				return Fail(error, "item '" + item.name + "' defaultQuantity exceeds maxQuantity");
+			if (item.defaultCharge > item.maxCharge)
+				return Fail(error, "item '" + item.name + "' defaultCharge exceeds maxCharge");
 			if (!ParseContainer(value.Find("container"), item.container, error))
 				return false;
 			if (item.container.Capacity() > 0)
@@ -260,10 +260,13 @@ namespace Trauma {
 
 		bool ParseRootTags(const JsonValue& root, ItemCatalog& catalog, std::string& error) {
 			catalog.rootTags = {
-				AllItemTags,
+				AllItemTags & ~(TagMask(ItemTag::Large) | TagMask(ItemTag::Backpack)
+					| TagMask(ItemTag::Belt)),
 				TagMask(ItemTag::Head),
 				TagMask(ItemTag::Body),
-				TagMask(ItemTag::Feet)
+				TagMask(ItemTag::Feet),
+				TagMask(ItemTag::Backpack) | TagMask(ItemTag::Large),
+				TagMask(ItemTag::Belt)
 			};
 			const JsonValue* slotTags = root.Find("slotTags");
 			if (!slotTags)
@@ -271,7 +274,8 @@ namespace Trauma {
 			if (!slotTags->IsObject())
 				return Fail(error, "slotTags must be an object");
 			const std::pair<const char*, size_t> keys[] = {
-				{ "hotbar", 0 }, { "head", 1 }, { "body", 2 }, { "feet", 3 }
+				{ "hotbar", 0 }, { "head", 1 }, { "body", 2 }, { "feet", 3 },
+				{ "back", 4 }, { "belt", 5 }
 			};
 			for (const auto& key : keys) {
 				if (const JsonValue* tags = slotTags->Find(key.first); tags) {
@@ -344,6 +348,8 @@ namespace Trauma {
 			case SlotKind::Head: return catalog.rootTags[1];
 			case SlotKind::Body: return catalog.rootTags[2];
 			case SlotKind::Feet: return catalog.rootTags[3];
+			case SlotKind::Back: return catalog.rootTags[4];
+			case SlotKind::Belt: return catalog.rootTags[5];
 			default: return catalog.rootTags[0];
 		}
 	}
@@ -402,12 +408,58 @@ namespace Trauma {
 		return ItemDefinitionFor(item).maxStack;
 	}
 
-	uint8_t ItemMaxQuantity(ItemId item) {
-		return ItemDefinitionFor(item).maxQuantity;
+	uint8_t ItemMaxCharge(ItemId item) {
+		return ItemDefinitionFor(item).maxCharge;
 	}
 
-	uint8_t ItemDefaultQuantity(ItemId item) {
-		return ItemDefinitionFor(item).defaultQuantity;
+	uint8_t ItemDefaultCharge(ItemId item) {
+		return ItemDefinitionFor(item).defaultCharge;
+	}
+
+	bool FindInventoryItem(const Inventory& inventory,
+		const std::function<bool(const ItemStack&)>& predicate, SlotAddress& found) {
+		found = SlotAddress{};
+		if (!predicate)
+			return false;
+
+		std::function<bool(const SlotAddress&, const ItemStack&)> visit;
+		visit = [&](const SlotAddress& address, const ItemStack& stack) {
+			if (stack.item != ItemNone && predicate(stack)) {
+				found = address;
+				return true;
+			}
+			if (!stack.container)
+				return false;
+
+			const size_t capacity = ItemContainerCapacity(stack.item);
+			for (size_t cell = 0; cell < capacity; ++cell) {
+				SlotAddress child;
+				if (!ChildSlot(address, cell, child))
+					break;
+				if (visit(child, stack.container->slots[cell]))
+					return true;
+			}
+			return false;
+		};
+
+		for (size_t index = 0; index < inventory.hotbar.size(); ++index)
+			if (visit(HotbarAddress(index), inventory.hotbar[index]))
+				return true;
+		for (size_t index = 0; index < inventory.clothing.size(); ++index)
+			if (visit(ClothingAddress(index), inventory.clothing[index]))
+				return true;
+		if (visit(BackAddress(), inventory.back))
+			return true;
+		if (visit(BeltAddress(), inventory.belt))
+			return true;
+		return false;
+	}
+
+	bool FindInventoryItem(const Inventory& inventory, ItemId item, SlotAddress& found) {
+		if (item == ItemNone)
+			return false;
+		return FindInventoryItem(inventory,
+			[item](const ItemStack& stack) { return stack.item == item; }, found);
 	}
 
 }

@@ -1,6 +1,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "Game.h"
 #include "Ui.h"
+#include "third_party/imgui/imgui_internal.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -50,6 +51,22 @@ namespace Trauma {
 		ImU32 ToImColour(olc::Pixel colour, float alpha = 1.0f) {
 			return IM_COL32(colour.r, colour.g, colour.b,
 				static_cast<int>(alpha * 255.0f + 0.5f));
+		}
+
+		std::string ContainerWindowTitle(const ItemStack& owner, const SlotAddress& address) {
+			const ItemContainerDefinition& definition = ItemContainerInfo(owner.item);
+			std::string title = definition.title.empty() ? "Inventory" : definition.title;
+			title += "###itemInventory_";
+			title += std::to_string(static_cast<unsigned>(address.kind));
+			title += "_";
+			title += std::to_string(address.index);
+			title += "_";
+			title += std::to_string(address.depth);
+			for (size_t i = 0; i < address.depth; ++i) {
+				title += "_";
+				title += std::to_string(address.path[i]);
+			}
+			return title;
 		}
 	}
 
@@ -179,6 +196,9 @@ namespace Trauma {
 			if (client.GetPickupCandidate(target))
 				client.PickupItem(target);
 		}
+
+		if (keyboard.GetKey(olc::Key::R).bPressed)
+			ReloadGun();
 	}
 
 	void Game::UpdateGrabMode() {
@@ -193,6 +213,31 @@ namespace Trauma {
 			|| !mouse.GetButton(0).bPressed)
 			return;
 		client.FireGun(hotbarSelection, camera.GetWorldTransform().inverse(mouse.GetPosition()));
+	}
+
+	void Game::ReloadGun() {
+		const Inventory& inventory = client.GetLocalRagdoll().inventory;
+		if (hotbarSelection >= inventory.hotbar.size()
+			|| !IsGun(inventory.hotbar[hotbarSelection].item)
+			|| LoadedMagazine(inventory, hotbarSelection))
+			return;
+
+		SlotAddress magazineAddress;
+		if (!FindInventoryItem(inventory, [](const ItemStack& stack) {
+				return IsMagazine(stack.item) && stack.charge > 0;
+			}, magazineAddress))
+			return;
+
+		SlotAddress gunMagazine;
+		if (!ChildSlot(HotbarAddress(hotbarSelection), 0, gunMagazine)
+			|| !ResolveSlot(inventory, gunMagazine))
+			return;
+
+		const ItemStack* magazine = ResolveSlot(inventory, magazineAddress);
+		if (!magazine || !CanMoveStackTo(inventory, magazineAddress, gunMagazine, *magazine))
+			return;
+
+		client.MoveItem(magazineAddress, gunMagazine);
 	}
 
 	void Game::UpdateDropMode() {
@@ -692,16 +737,16 @@ namespace Trauma {
 
 		const ItemStack& held = inventory.hotbar[inventory.selected];
 		if (IsGun(held.item)) {
-			const ItemStack* magazine = LoadedMagazine(inventory, inventory.selected);
+			const ItemStack* magazine = GunMagazine(inventory, inventory.selected);
 			if (magazine)
 				ImGui::TextColored(HudText, "gun  magazine x%u",
-					static_cast<unsigned>(magazine->quantity));
+					static_cast<unsigned>(magazine->charge));
 			else
 				ImGui::TextColored(HudText, "gun  no magazine");
 		}
 		else if (IsShelf(held.item))
 			ImGui::TextColored(HudText, "%s x%u", ItemName(held.item),
-				static_cast<unsigned>(inventory.shelfKits));
+				static_cast<unsigned>(held.quantity));
 		else if (ItemContainerCapacity(held.item) > 0) {
 			const ItemContainerDefinition& definition = ItemContainerInfo(held.item);
 			ImGui::TextColored(HudText, "%s  %ux%u", ItemName(held.item),
@@ -748,6 +793,25 @@ namespace Trauma {
 
 			const SlotResult result = BuildSlot(id, inventory, ClothingAddress(index),
 				inventory.clothing[index], SlotKindName(ClothingKind(index)), false);
+			if (result.dropped) {
+				client.MoveItem(result.payload.source, result.dropTarget);
+				dragDelivered = true;
+			}
+		}
+
+		ImGui::SameLine(0.0f, HotbarGroupSpacing);
+		{
+			const SlotResult result = BuildSlot("back", inventory, BackAddress(),
+				inventory.back, "back", false);
+			if (result.dropped) {
+				client.MoveItem(result.payload.source, result.dropTarget);
+				dragDelivered = true;
+			}
+		}
+		ImGui::SameLine();
+		{
+			const SlotResult result = BuildSlot("belt", inventory, BeltAddress(),
+				inventory.belt, "belt", false);
 			if (result.dropped) {
 				client.MoveItem(result.payload.source, result.dropTarget);
 				dragDelivered = true;
@@ -811,9 +875,44 @@ namespace Trauma {
 			}), openContainers.end());
 
 		const std::vector<OpenContainerWindow> openWindows = openContainers;
-		for (const OpenContainerWindow& open : openWindows)
-			if (IsContainerOpen(open.address))
-				BuildContainerWindow(inventory, open.address, open.anchor);
+		std::vector<ContainerWindowSnapshot> snapWindows;
+		for (const OpenContainerWindow& open : openWindows) {
+			if (!IsContainerOpen(open.address))
+				continue;
+			const ItemStack* owner = ResolveSlot(inventory, open.address);
+			if (!owner || ItemContainerCapacity(owner->item) == 0)
+				continue;
+			const std::string title = ContainerWindowTitle(*owner, open.address);
+			const ImGuiWindow* window = ImGui::FindWindowByName(title.c_str());
+			if (!window)
+				continue;
+			ContainerWindowSnapshot snapshot;
+			snapshot.address = open.address;
+			snapshot.title = title;
+			snapshot.position = { window->Pos.x, window->Pos.y };
+			snapshot.size = { window->Size.x, window->Size.y };
+			snapshot.previousPosition = open.position;
+			snapshot.hadPrevious = open.positionValid;
+			snapWindows.push_back(std::move(snapshot));
+		}
+		SnapContainerWindows(snapWindows);
+
+		std::vector<ContainerWindowSnapshot> containerWindows;
+		for (const OpenContainerWindow& open : openWindows) {
+			if (!IsContainerOpen(open.address))
+				continue;
+			ContainerWindowSnapshot window;
+			if (BuildContainerWindow(inventory, open, window))
+				containerWindows.push_back(window);
+		}
+		for (const ContainerWindowSnapshot& window : containerWindows) {
+			const auto existing = std::find_if(openContainers.begin(), openContainers.end(),
+				[&](const OpenContainerWindow& open) { return SameSlot(open.address, window.address); });
+			if (existing != openContainers.end()) {
+				existing->position = window.position;
+				existing->positionValid = true;
+			}
+		}
 
 		ResolveItemDrag();
 	}
@@ -892,8 +991,9 @@ namespace Trauma {
 			hovered ? SlotHoverBorder : (selected ? SlotSelectedBorder : SlotBorder));
 		list->PushClipRect(origin, corner, true);
 		list->AddText(ImGui::GetFont(), SlotCaptionFontSize, origin + ImVec2(3.0f, 1.0f), SlotCaption, caption);
-		const uint8_t count = IsShelf(stack.item) ? inventory.shelfKits : stack.quantity;
-		if (count > 0) {
+		const uint8_t maxCharge = ItemMaxCharge(stack.item);
+		const uint8_t count = maxCharge > 0 ? stack.charge : stack.quantity;
+		if (maxCharge > 0 || count > 1) {
 			char quantity[8] = {};
 			std::snprintf(quantity, sizeof(quantity), "x%u", static_cast<unsigned>(count));
 			const ImVec2 size = ImGui::CalcTextSize(quantity);
@@ -904,9 +1004,10 @@ namespace Trauma {
 
 		if (hovered && stack.item != ItemNone) {
 			const char* name = ItemName(stack.item);
-			if (IsShelf(stack.item))
-				ImGui::SetTooltip("%s x%u", name, static_cast<unsigned>(inventory.shelfKits));
-			else if (stack.quantity > 0)
+			if (maxCharge > 0)
+				ImGui::SetTooltip("%s  charge %u/%u", name, static_cast<unsigned>(stack.charge),
+					static_cast<unsigned>(maxCharge));
+			else if (stack.quantity > 1)
 				ImGui::SetTooltip("%s x%u", name, static_cast<unsigned>(stack.quantity));
 			else
 				ImGui::SetTooltip("%s", name);
@@ -937,28 +1038,19 @@ namespace Trauma {
 			openContainers.end());
 	}
 
-	void Game::BuildContainerWindow(const Inventory& inventory, const SlotAddress& address,
-		const olc::vf2d& anchor) {
-		const SlotAddress ownerAddress = address;
+	bool Game::BuildContainerWindow(const Inventory& inventory, const OpenContainerWindow& state,
+		ContainerWindowSnapshot& snapshot) {
+		const SlotAddress ownerAddress = state.address;
 		const ItemStack* owner = ResolveSlot(inventory, ownerAddress);
 		if (!owner || ItemContainerCapacity(owner->item) == 0)
-			return;
+			return false;
 
 		const ItemContainerDefinition& definition = ItemContainerInfo(owner->item);
-		std::string title = definition.title.empty() ? "Inventory" : definition.title;
-		title += "###itemInventory_";
-		title += std::to_string(static_cast<unsigned>(ownerAddress.kind));
-		title += "_";
-		title += std::to_string(ownerAddress.index);
-		title += "_";
-		title += std::to_string(ownerAddress.depth);
-		for (size_t i = 0; i < ownerAddress.depth; ++i) {
-			title += "_";
-			title += std::to_string(ownerAddress.path[i]);
-		}
+		const std::string title = ContainerWindowTitle(*owner, ownerAddress);
 
 		bool open = true;
-		ImGui::SetNextWindowPos(ImVec2(anchor.x, anchor.y), ImGuiCond_Appearing, ImVec2(0.5f, 1.0f));
+		ImGui::SetNextWindowPos(ImVec2(state.anchor.x, state.anchor.y), ImGuiCond_Appearing,
+			ImVec2(0.5f, 1.0f));
 		ImGui::SetNextWindowBgAlpha(0.94f);
 		ImGui::Begin(title.c_str(), &open, ImGuiWindowFlags_AlwaysAutoResize
 			| ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
@@ -1013,10 +1105,83 @@ namespace Trauma {
 		}
 
 		ImGui::PopStyleVar();
+		const ImVec2 windowPosition = ImGui::GetWindowPos();
+		const ImVec2 windowSize = ImGui::GetWindowSize();
 		ImGui::End();
 
-		if (!open)
+		if (!open) {
 			CloseContainer(ownerAddress);
+			return false;
+		}
+
+		snapshot.address = ownerAddress;
+		snapshot.title = title;
+		snapshot.position = { windowPosition.x, windowPosition.y };
+		snapshot.size = { windowSize.x, windowSize.y };
+		return true;
+	}
+
+	void Game::SnapContainerWindows(std::vector<ContainerWindowSnapshot>& windows) {
+		constexpr float SnapDistance = 8.0f;
+		for (ContainerWindowSnapshot& window : windows) {
+			if (!window.hadPrevious
+				|| (std::fabs(window.position.x - window.previousPosition.x) < 0.5f
+					&& std::fabs(window.position.y - window.previousPosition.y) < 0.5f))
+				continue;
+
+			float bestX = 0.0f;
+			float bestY = 0.0f;
+			float bestDistanceX = SnapDistance + 1.0f;
+			float bestDistanceY = SnapDistance + 1.0f;
+			const float movingRight = window.position.x + window.size.x;
+			const float movingBottom = window.position.y + window.size.y;
+
+			for (const ContainerWindowSnapshot& other : windows) {
+				if (SameSlot(window.address, other.address))
+					continue;
+
+				const float otherRight = other.position.x + other.size.x;
+				const float otherBottom = other.position.y + other.size.y;
+				const float xCandidates[] = {
+					other.position.x - window.position.x,
+					otherRight - movingRight,
+					other.position.x - movingRight,
+					otherRight - window.position.x
+				};
+				const float yCandidates[] = {
+					other.position.y - window.position.y,
+					otherBottom - movingBottom,
+					other.position.y - movingBottom,
+					otherBottom - window.position.y
+				};
+
+				for (float dx : xCandidates) {
+					const float distance = std::fabs(dx);
+					if (distance <= SnapDistance && distance < bestDistanceX) {
+						bestX = dx;
+						bestDistanceX = distance;
+					}
+				}
+				for (float dy : yCandidates) {
+					const float distance = std::fabs(dy);
+					if (distance <= SnapDistance && distance < bestDistanceY) {
+						bestY = dy;
+						bestDistanceY = distance;
+					}
+				}
+			}
+
+			olc::vf2d target = window.position;
+			if (bestDistanceX <= SnapDistance)
+				target.x += bestX;
+			if (bestDistanceY <= SnapDistance)
+				target.y += bestY;
+			if (target.x == window.position.x && target.y == window.position.y)
+				continue;
+
+			ImGui::SetWindowPos(window.title.c_str(), ImVec2(target.x, target.y));
+			window.position = target;
+		}
 	}
 
 	void Game::DrawItemGhost(ItemId item) {

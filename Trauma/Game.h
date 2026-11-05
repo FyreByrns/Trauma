@@ -43,6 +43,17 @@ namespace Trauma {
 		struct OpenContainerWindow {
 			SlotAddress address;
 			olc::vf2d anchor;
+			olc::vf2d position;
+			bool positionValid = false;
+		};
+
+		struct ContainerWindowSnapshot {
+			SlotAddress address;
+			std::string title;
+			olc::vf2d position;
+			olc::vf2d size;
+			olc::vf2d previousPosition;
+			bool hadPrevious = false;
 		};
 
 		bool UpdatePlay(float fElapsedTime);
@@ -51,6 +62,7 @@ namespace Trauma {
 		void UpdateInventoryInput();
 		void UpdateGrabMode();
 		void UpdateGunFire();
+		void ReloadGun();
 		void UpdateDropMode();
 		void UpdateDropPreview();
 		InputState SampleInput(bool bJump) const;
@@ -83,8 +95,9 @@ namespace Trauma {
 		bool IsContainerOpen(const SlotAddress& address) const;
 		void ToggleContainer(const SlotAddress& address, const olc::vf2d& anchor);
 		void CloseContainer(const SlotAddress& address);
-		void BuildContainerWindow(const Inventory& inventory, const SlotAddress& address,
-			const olc::vf2d& anchor);
+		bool BuildContainerWindow(const Inventory& inventory, const OpenContainerWindow& state,
+			ContainerWindowSnapshot& snapshot);
+		void SnapContainerWindows(std::vector<ContainerWindowSnapshot>& windows);
 		void ResolveItemDrag();
 
 	private:

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -17,7 +18,6 @@ namespace Trauma {
 	constexpr size_t HotbarSlots = 10;
 	constexpr size_t ClothingSlots = 3;
 	constexpr size_t MaxWorldItems = 16;
-	constexpr uint8_t MaxShelfKits = 4;
 	constexpr uint8_t MagazineCapacity = 8;
 	constexpr uint32_t GunCooldownTicks = 8;
 	constexpr float GunRange = 900.0f;
@@ -38,7 +38,9 @@ namespace Trauma {
 		Shelf = 1u << 8,
 		Tool = 1u << 9,
 		Consumable = 1u << 10,
-		Ammo = 1u << 11
+		Ammo = 1u << 11,
+		Large = 1u << 12,
+		Belt = 1u << 13
 	};
 
 	using ItemTags = uint32_t;
@@ -48,7 +50,8 @@ namespace Trauma {
 		| static_cast<ItemTags>(ItemTag::Gun) | static_cast<ItemTags>(ItemTag::Magazine)
 		| static_cast<ItemTags>(ItemTag::Container) | static_cast<ItemTags>(ItemTag::Backpack)
 		| static_cast<ItemTags>(ItemTag::Shelf) | static_cast<ItemTags>(ItemTag::Tool)
-		| static_cast<ItemTags>(ItemTag::Consumable) | static_cast<ItemTags>(ItemTag::Ammo);
+		| static_cast<ItemTags>(ItemTag::Consumable) | static_cast<ItemTags>(ItemTag::Ammo)
+		| static_cast<ItemTags>(ItemTag::Large) | static_cast<ItemTags>(ItemTag::Belt);
 
 	inline constexpr ItemTags TagMask(ItemTag tag) {
 		return static_cast<ItemTags>(tag);
@@ -58,7 +61,9 @@ namespace Trauma {
 		Hotbar = 0,
 		Head = 1,
 		Body = 2,
-		Feet = 3
+		Feet = 3,
+		Back = 4,
+		Belt = 5
 	};
 
 	inline size_t ClothingIndex(SlotKind kind) {
@@ -84,6 +89,8 @@ namespace Trauma {
 			case SlotKind::Head: return "head";
 			case SlotKind::Body: return "body";
 			case SlotKind::Feet: return "feet";
+			case SlotKind::Back: return "back";
+			case SlotKind::Belt: return "belt";
 			default: return "hotbar";
 		}
 	}
@@ -131,8 +138,8 @@ namespace Trauma {
 		olc::Pixel colour = olc::Pixel(60, 70, 80);
 		ItemBodyDefinition body;
 		uint8_t maxStack = 1;
-		uint8_t maxQuantity = 1;
-		uint8_t defaultQuantity = 0;
+		uint8_t maxCharge = 0;
+		uint8_t defaultCharge = 0;
 		ItemContainerDefinition container;
 	};
 
@@ -148,6 +155,7 @@ namespace Trauma {
 	struct ItemStack {
 		ItemId item = ItemNone;
 		uint8_t quantity = 0;
+		uint8_t charge = 0;
 		std::unique_ptr<ItemContainer> container;
 
 		ItemStack() = default;
@@ -165,12 +173,13 @@ namespace Trauma {
 	struct Inventory {
 		std::array<ItemStack, HotbarSlots> hotbar{};
 		std::array<ItemStack, ClothingSlots> clothing{};
+		ItemStack back;
+		ItemStack belt;
 		uint8_t selected = 0;
-		uint8_t shelfKits = MaxShelfKits;
 	};
 
 	inline ItemStack::ItemStack(const ItemStack& other)
-		: item(other.item), quantity(other.quantity) {
+		: item(other.item), quantity(other.quantity), charge(other.charge) {
 		if (other.container)
 			container = std::make_unique<ItemContainer>(*other.container);
 	}
@@ -180,6 +189,7 @@ namespace Trauma {
 			return *this;
 		item = other.item;
 		quantity = other.quantity;
+		charge = other.charge;
 		container.reset();
 		if (other.container)
 			container = std::make_unique<ItemContainer>(*other.container);
@@ -205,8 +215,13 @@ namespace Trauma {
 	bool HasItemTag(ItemId item, ItemTag tag);
 	size_t ItemContainerCapacity(ItemId item);
 	uint8_t ItemMaxStack(ItemId item);
-	uint8_t ItemMaxQuantity(ItemId item);
-	uint8_t ItemDefaultQuantity(ItemId item);
+	uint8_t ItemMaxCharge(ItemId item);
+	uint8_t ItemDefaultCharge(ItemId item);
+
+	// Searches the hotbar, clothing, and every nested item container.
+	bool FindInventoryItem(const Inventory& inventory,
+		const std::function<bool(const ItemStack&)>& predicate, SlotAddress& found);
+	bool FindInventoryItem(const Inventory& inventory, ItemId item, SlotAddress& found);
 
 	inline bool IsItem(ItemId item) {
 		return item != ItemNone;
@@ -276,11 +291,30 @@ namespace Trauma {
 		return address;
 	}
 
+	inline SlotAddress BackAddress() {
+		SlotAddress address;
+		address.kind = SlotKind::Back;
+		return address;
+	}
+
+	inline SlotAddress BeltAddress() {
+		SlotAddress address;
+		address.kind = SlotKind::Belt;
+		return address;
+	}
+
 	inline ItemStack* RootStack(Inventory& inventory, const SlotAddress& address) {
-		if (address.kind == SlotKind::Hotbar) {
-			if (address.index >= inventory.hotbar.size())
-				return nullptr;
-			return &inventory.hotbar[address.index];
+		switch (address.kind) {
+			case SlotKind::Hotbar:
+				if (address.index >= inventory.hotbar.size())
+					return nullptr;
+				return &inventory.hotbar[address.index];
+			case SlotKind::Back:
+				return address.index == 0 ? &inventory.back : nullptr;
+			case SlotKind::Belt:
+				return address.index == 0 ? &inventory.belt : nullptr;
+			default:
+				break;
 		}
 		const size_t clothing = ClothingIndex(address.kind);
 		if (clothing >= inventory.clothing.size())
@@ -289,10 +323,17 @@ namespace Trauma {
 	}
 
 	inline const ItemStack* RootStack(const Inventory& inventory, const SlotAddress& address) {
-		if (address.kind == SlotKind::Hotbar) {
-			if (address.index >= inventory.hotbar.size())
-				return nullptr;
-			return &inventory.hotbar[address.index];
+		switch (address.kind) {
+			case SlotKind::Hotbar:
+				if (address.index >= inventory.hotbar.size())
+					return nullptr;
+				return &inventory.hotbar[address.index];
+			case SlotKind::Back:
+				return address.index == 0 ? &inventory.back : nullptr;
+			case SlotKind::Belt:
+				return address.index == 0 ? &inventory.belt : nullptr;
+			default:
+				break;
 		}
 		const size_t clothing = ClothingIndex(address.kind);
 		if (clothing >= inventory.clothing.size())
@@ -342,7 +383,8 @@ namespace Trauma {
 		stack.item = item;
 		if (item == ItemNone)
 			return stack;
-		stack.quantity = ItemDefaultQuantity(item);
+		stack.quantity = 1;
+		stack.charge = ItemDefaultCharge(item);
 		if (ItemContainerCapacity(item) > 0)
 			stack.container = std::make_unique<ItemContainer>();
 		return stack;
@@ -396,6 +438,9 @@ namespace Trauma {
 		if (stack.item == ItemNone)
 			return false;
 		const ItemTags tags = ItemTagsFor(stack.item);
+		if (address.depth == 0 && address.kind != SlotKind::Back
+			&& TagsOverlap(tags, TagMask(ItemTag::Large)))
+			return false;
 		if (!TagsOverlap(tags, SlotAcceptedTags(inventory, address)))
 			return false;
 		if (address.depth > 0 && !IsItemContainerEmpty(stack)) {
@@ -441,6 +486,7 @@ namespace Trauma {
 			return false;
 
 		if (target->item == source->item && ItemMaxStack(source->item) > 1
+			&& source->charge == target->charge
 			&& IsItemContainerEmpty(*source) && IsItemContainerEmpty(*target)) {
 			const uint8_t maxStack = ItemMaxStack(source->item);
 			if (target->quantity < maxStack && source->quantity > 0) {
@@ -475,40 +521,66 @@ namespace Trauma {
 		return true;
 	}
 
-	inline size_t FindEmptyHotbarSlot(const Inventory& inventory, const ItemStack& stack) {
-		for (size_t slot = 0; slot < inventory.hotbar.size(); ++slot)
-			if (inventory.hotbar[slot].item == ItemNone
-				&& SlotAcceptsStack(inventory, HotbarAddress(slot), stack))
-				return slot;
-		return inventory.hotbar.size();
+	inline bool FindEmptyCarrySlot(const Inventory& inventory, const ItemStack& stack, SlotAddress& found) {
+		if (inventory.belt.item == ItemNone) {
+			const SlotAddress address = BeltAddress();
+			if (SlotAcceptsStack(inventory, address, stack)) {
+				found = address;
+				return true;
+			}
+		}
+		for (size_t slot = 0; slot < inventory.hotbar.size(); ++slot) {
+			if (inventory.hotbar[slot].item != ItemNone)
+				continue;
+			const SlotAddress address = HotbarAddress(slot);
+			if (!SlotAcceptsStack(inventory, address, stack))
+				continue;
+			found = address;
+			return true;
+		}
+		if (inventory.back.item == ItemNone) {
+			const SlotAddress address = BackAddress();
+			if (SlotAcceptsStack(inventory, address, stack)) {
+				found = address;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	inline bool HasShelfTool(const Inventory& inventory) {
 		for (const ItemStack& stack : inventory.hotbar)
-			if (IsShelf(stack.item))
+			if (IsShelf(stack.item) && stack.quantity > 0)
 				return true;
 		return false;
 	}
 
 	inline void ConsumeShelfKit(Inventory& inventory) {
-		if (inventory.shelfKits > 0)
-			--inventory.shelfKits;
-		if (inventory.shelfKits == 0)
-			for (ItemStack& stack : inventory.hotbar)
-				if (IsShelf(stack.item))
-					stack = ItemStack{};
+		for (ItemStack& stack : inventory.hotbar) {
+			if (!IsShelf(stack.item) || stack.quantity == 0)
+				continue;
+			--stack.quantity;
+			if (stack.quantity == 0)
+				stack = ItemStack{};
+			return;
+		}
 	}
 
-	inline const ItemStack* LoadedMagazine(const Inventory& inventory, size_t gunSlot) {
+	inline const ItemStack* GunMagazine(const Inventory& inventory, size_t gunSlot) {
 		if (gunSlot >= inventory.hotbar.size() || !IsGun(inventory.hotbar[gunSlot].item))
 			return nullptr;
 		const ItemStack& gun = inventory.hotbar[gunSlot];
 		if (!gun.container)
 			return nullptr;
 		for (const ItemStack& stack : gun.container->slots)
-			if (IsMagazine(stack.item) && stack.quantity > 0)
+			if (IsMagazine(stack.item))
 				return &stack;
 		return nullptr;
+	}
+
+	inline const ItemStack* LoadedMagazine(const Inventory& inventory, size_t gunSlot) {
+		const ItemStack* magazine = GunMagazine(inventory, gunSlot);
+		return magazine && magazine->charge > 0 ? magazine : nullptr;
 	}
 
 	inline bool ConsumeGunRound(Inventory& inventory, size_t gunSlot) {
@@ -518,11 +590,9 @@ namespace Trauma {
 		if (!gun.container)
 			return false;
 		for (ItemStack& magazine : gun.container->slots) {
-			if (!IsMagazine(magazine.item) || magazine.quantity == 0)
+			if (!IsMagazine(magazine.item) || magazine.charge == 0)
 				continue;
-			--magazine.quantity;
-			if (magazine.quantity == 0)
-				magazine = ItemStack{};
+			--magazine.charge;
 			return true;
 		}
 		return false;
@@ -554,11 +624,13 @@ namespace Trauma {
 		inventory.hotbar[2] = MakeStack(FindItemId("medkit"));
 		inventory.hotbar[3] = MakeStack(FindItemId("oxygen tank"));
 		inventory.hotbar[4] = MakeStack(FindItemId("shelf"));
-		inventory.shelfKits = MaxShelfKits;
+		if (inventory.hotbar[4].item != ItemNone)
+			inventory.hotbar[4].quantity = ItemMaxStack(inventory.hotbar[4].item);
 		inventory.hotbar[5] = MakeStack(FindItemId("gun"));
 		inventory.hotbar[6] = MakeStack(FindItemId("magazine"));
 		inventory.hotbar[7] = MakeStack(FindItemId("magazine"));
-		inventory.hotbar[8] = MakeStack(FindItemId("backpack"));
+		inventory.back = MakeStack(FindItemId("backpack"));
+		inventory.belt = MakeStack(FindItemId("belt"));
 		inventory.clothing[0] = MakeStack(FindItemId("helmet"));
 		inventory.clothing[1] = MakeStack(FindItemId("diving suit"));
 		inventory.clothing[2] = MakeStack(FindItemId("boots"));

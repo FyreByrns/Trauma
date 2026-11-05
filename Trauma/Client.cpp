@@ -237,8 +237,7 @@ namespace Trauma {
 	}
 
 	void Client::PlaceShelf(const olc::vf2d& position) {
-		if (status != Status::Connected || predicted.inventory.shelfKits == 0
-			|| !HasShelfTool(predicted.inventory))
+		if (status != Status::Connected || !HasShelfTool(predicted.inventory))
 			return;
 		Net::PacketWriter packet(Net::MessageType::Shelf);
 		Net::WriteShelfPlace(packet, position);
@@ -372,31 +371,37 @@ namespace Trauma {
 			ShelfView& shelf = shelves[target.index];
 			if (!shelf.active || shelf.items[target.item].stack.item == ItemNone)
 				return;
-			const size_t slot = FindEmptyHotbarSlot(predicted.inventory,
-				shelf.items[target.item].stack);
-			if (slot >= predicted.inventory.hotbar.size())
+			SlotAddress slot;
+			if (!FindEmptyCarrySlot(predicted.inventory,
+				shelf.items[target.item].stack, slot))
+				return;
+			ItemStack* destination = ResolveSlot(predicted.inventory, slot);
+			if (!destination)
 				return;
 
 			Net::PacketWriter packet(Net::MessageType::Inventory);
 			Net::WriteShelfPickup(packet, target.index, target.item);
 			SendPacket(packet);
 
-			predicted.inventory.hotbar[slot] = shelf.items[target.item].stack;
+			*destination = shelf.items[target.item].stack;
 			shelf.items[target.item] = ShelfItemView{};
 			return;
 		}
 
 		if (target.index >= MaxWorldItems || worldItems[target.index].stack.item == ItemNone)
 			return;
-		const size_t slot = FindEmptyHotbarSlot(predicted.inventory, worldItems[target.index].stack);
-		if (slot >= predicted.inventory.hotbar.size())
+		SlotAddress slot;
+		if (!FindEmptyCarrySlot(predicted.inventory, worldItems[target.index].stack, slot))
+			return;
+		ItemStack* destination = ResolveSlot(predicted.inventory, slot);
+		if (!destination)
 			return;
 
 		Net::PacketWriter packet(Net::MessageType::Inventory);
 		Net::WriteInventoryPickup(packet, target.index);
 		SendPacket(packet);
 
-		predicted.inventory.hotbar[slot] = worldItems[target.index].stack;
+		*destination = worldItems[target.index].stack;
 
 		const uint8_t targetId = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + target.index + 1);
 		for (HandGrip& grip : predicted.grips)

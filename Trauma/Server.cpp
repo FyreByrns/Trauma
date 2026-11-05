@@ -354,8 +354,8 @@ namespace Trauma {
 			return false;
 
 		Inventory& inventory = client.player.inventory;
-		const size_t slot = FindEmptyHotbarSlot(inventory, itemStacks[index]);
-		if (slot >= inventory.hotbar.size())
+		SlotAddress slot;
+		if (!FindEmptyCarrySlot(inventory, itemStacks[index], slot))
 			return false;
 
 		const uint8_t target = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + index + 1);
@@ -370,7 +370,10 @@ namespace Trauma {
 		if (!holding)
 			return false;
 
-		inventory.hotbar[slot] = std::move(itemStacks[index]);
+		ItemStack* destination = ResolveSlot(inventory, slot);
+		if (!destination)
+			return false;
+		*destination = std::move(itemStacks[index]);
 		itemStacks[index] = ItemStack{};
 		items[index] = DeadItemBody();
 		return true;
@@ -393,11 +396,14 @@ namespace Trauma {
 			return false;
 
 		Inventory& inventory = client.player.inventory;
-		const size_t slot = FindEmptyHotbarSlot(inventory, shelf.stacks[itemIndex]);
-		if (slot >= inventory.hotbar.size())
+		SlotAddress slot;
+		if (!FindEmptyCarrySlot(inventory, shelf.stacks[itemIndex], slot))
+			return false;
+		ItemStack* destination = ResolveSlot(inventory, slot);
+		if (!destination)
 			return false;
 
-		inventory.hotbar[slot] = std::move(shelf.stacks[itemIndex]);
+		*destination = std::move(shelf.stacks[itemIndex]);
 		shelf.stacks[itemIndex] = ItemStack{};
 		shelf.items[itemIndex] = DeadItemBody();
 		return true;
@@ -416,7 +422,7 @@ namespace Trauma {
 		const bool placing = action == static_cast<uint8_t>(Net::ShelfAction::Place);
 		if (!placing && action != static_cast<uint8_t>(Net::ShelfAction::Move))
 			return;
-		if (!HasShelfTool(client->player.inventory) || client->player.inventory.shelfKits == 0)
+		if (!HasShelfTool(client->player.inventory))
 			return;
 
 		uint8_t index = 0;

@@ -1,9 +1,11 @@
 {
   "slotTags": {
-    "hotbar": ["any"],
+    "hotbar": ["clothing", "head", "body", "feet", "gun", "magazine", "shelf", "tool", "consumable", "ammo", "belt"],
     "head": ["head"],
     "body": ["body"],
-    "feet": ["feet"]
+    "feet": ["feet"],
+    "back": ["backpack", "large"],
+    "belt": ["belt"]
   },
   "items": [
     {
@@ -53,7 +55,8 @@
       "name": "shelf",
       "tags": ["shelf", "tool"],
       "colour": [150, 110, 65],
-      "body": { "shape": "box", "halfExtents": [10.0, 4.0], "density": 0.6 }
+      "body": { "shape": "box", "halfExtents": [10.0, 4.0], "density": 0.6 },
+      "maxStack": 4
     },
     {
       "name": "gun",
@@ -76,12 +79,12 @@
       "tags": ["magazine", "ammo"],
       "colour": [180, 150, 70],
       "body": { "shape": "box", "halfExtents": [3.0, 5.0], "density": 0.4 },
-      "maxQuantity": 8,
-      "defaultQuantity": 8
+      "maxCharge": 8,
+      "defaultCharge": 8
     },
     {
       "name": "backpack",
-      "tags": ["container", "backpack"],
+      "tags": ["container", "backpack", "large"],
       "colour": [105, 120, 80],
       "body": { "shape": "box", "halfExtents": [9.0, 7.0], "density": 0.6 },
       "container": {
@@ -93,6 +96,22 @@
         "sections": [
           { "name": "Main", "x": 0, "y": 0, "width": 4, "height": 2 },
           { "name": "Pockets", "x": 0, "y": 2, "width": 4, "height": 1 }
+        ]
+      }
+    },
+    {
+      "name": "belt",
+      "tags": ["belt", "container"],
+      "colour": [110, 90, 70],
+      "body": { "shape": "box", "halfExtents": [8.0, 3.0], "density": 0.45 },
+      "container": {
+        "title": "Utility Belt",
+        "width": 3,
+        "height": 1,
+        "accept": ["gun", "magazine", "tool", "consumable", "ammo"],
+        "acceptFilled": ["gun"],
+        "sections": [
+          { "name": "Belt", "x": 0, "y": 0, "width": 3, "height": 1 }
         ]
       }
     }
