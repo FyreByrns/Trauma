@@ -1,11 +1,14 @@
 #define OLC_PGE3_APPLICATION
 #include "Game.h"
+#include "Items.h"
 #include "Network.h"
 #include "Server.h"
 #include <charconv>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
 	bool ParsePort(const std::string& text, uint16_t& port) {
@@ -20,6 +23,40 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+	namespace fs = std::filesystem;
+	std::vector<fs::path> itemCandidates;
+	std::error_code pathError;
+	const fs::path workingDirectory = fs::current_path(pathError);
+	if (!pathError)
+		itemCandidates.push_back(workingDirectory / "data" / "items.json");
+	if (!pathError)
+		itemCandidates.push_back(workingDirectory / "Trauma" / "data" / "items.json");
+	if (argc > 0 && argv[0] && argv[0][0] != '\0') {
+		const fs::path executable = fs::absolute(fs::path(argv[0]), pathError).parent_path();
+		if (!pathError) {
+			itemCandidates.push_back(executable / "data" / "items.json");
+			itemCandidates.push_back(executable / ".." / ".." / "Trauma" / "data" / "items.json");
+			itemCandidates.push_back(executable / ".." / ".." / "data" / "items.json");
+		}
+	}
+	fs::path itemPath;
+	for (const fs::path& candidate : itemCandidates) {
+		std::error_code existsError;
+		if (fs::exists(candidate, existsError) && !existsError) {
+			itemPath = candidate;
+			break;
+		}
+	}
+	if (itemPath.empty()) {
+		std::cout << "failed to find data/items.json" << std::endl;
+		return 1;
+	}
+	std::string itemError;
+	if (!Trauma::LoadItemRegistry(itemPath.string(), itemError)) {
+		std::cout << itemError << std::endl;
+		return 1;
+	}
+
 	Trauma::Net::Network network;
 	if (!network.IsReady()) {
 		std::cout << "failed to initialise winsock" << std::endl;

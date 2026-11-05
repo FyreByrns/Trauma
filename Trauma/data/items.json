@@ -1,0 +1,100 @@
+{
+  "slotTags": {
+    "hotbar": ["any"],
+    "head": ["head"],
+    "body": ["body"],
+    "feet": ["feet"]
+  },
+  "items": [
+    {
+      "name": "wrench",
+      "tags": ["tool"],
+      "colour": [150, 160, 170],
+      "body": { "shape": "box", "halfExtents": [9.0, 2.5], "density": 0.6 }
+    },
+    {
+      "name": "flashlight",
+      "tags": ["tool"],
+      "colour": [235, 205, 110],
+      "body": { "shape": "box", "halfExtents": [7.0, 3.0], "density": 0.6 }
+    },
+    {
+      "name": "medkit",
+      "tags": ["consumable"],
+      "colour": [215, 90, 90],
+      "body": { "shape": "box", "halfExtents": [7.0, 6.0], "density": 0.5 },
+      "maxStack": 3
+    },
+    {
+      "name": "oxygen tank",
+      "tags": ["tool"],
+      "colour": [110, 190, 200],
+      "body": { "shape": "circle", "radius": 6.0, "density": 0.5 }
+    },
+    {
+      "name": "diving suit",
+      "tags": ["clothing", "body"],
+      "colour": [70, 140, 120],
+      "body": { "shape": "box", "halfExtents": [8.0, 9.0], "density": 0.6 }
+    },
+    {
+      "name": "helmet",
+      "tags": ["clothing", "head"],
+      "colour": [120, 160, 200],
+      "body": { "shape": "box", "halfExtents": [6.0, 6.0], "density": 0.5 }
+    },
+    {
+      "name": "boots",
+      "tags": ["clothing", "feet"],
+      "colour": [120, 100, 80],
+      "body": { "shape": "box", "halfExtents": [6.0, 4.0], "density": 0.5 }
+    },
+    {
+      "name": "shelf",
+      "tags": ["shelf", "tool"],
+      "colour": [150, 110, 65],
+      "body": { "shape": "box", "halfExtents": [10.0, 4.0], "density": 0.6 }
+    },
+    {
+      "name": "gun",
+      "tags": ["gun", "tool"],
+      "colour": [95, 100, 110],
+      "body": { "shape": "box", "halfExtents": [7.0, 3.0], "density": 0.8 },
+      "container": {
+        "title": "Gun",
+        "width": 1,
+        "height": 1,
+        "accept": ["magazine"],
+        "acceptFilled": [],
+        "sections": [
+          { "name": "Magazine", "x": 0, "y": 0, "width": 1, "height": 1 }
+        ]
+      }
+    },
+    {
+      "name": "magazine",
+      "tags": ["magazine", "ammo"],
+      "colour": [180, 150, 70],
+      "body": { "shape": "box", "halfExtents": [3.0, 5.0], "density": 0.4 },
+      "maxQuantity": 8,
+      "defaultQuantity": 8
+    },
+    {
+      "name": "backpack",
+      "tags": ["container", "backpack"],
+      "colour": [105, 120, 80],
+      "body": { "shape": "box", "halfExtents": [9.0, 7.0], "density": 0.6 },
+      "container": {
+        "title": "Backpack",
+        "width": 4,
+        "height": 3,
+        "accept": ["any"],
+        "acceptFilled": ["gun"],
+        "sections": [
+          { "name": "Main", "x": 0, "y": 0, "width": 4, "height": 2 },
+          { "name": "Pockets", "x": 0, "y": 2, "width": 4, "height": 1 }
+        ]
+      }
+    }
+  ]
+}

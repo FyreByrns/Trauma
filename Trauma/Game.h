@@ -3,6 +3,7 @@
 #include "olcPixelGameEngine3.h"
 #include "olcUTIL3_Camera2D.h"
 #include <string>
+#include <vector>
 
 namespace Trauma {
 	class Game final : public olc::PixelGameEngine {
@@ -16,24 +17,32 @@ namespace Trauma {
 	private:
 		struct ItemDrag {
 			bool active = false;
-			bool clothing = false;
-			size_t index = 0;
-			Item item = Item::None;
+			SlotAddress source;
+			ItemId item = ItemNone;
 		};
 
 		struct SlotResult {
 			bool clicked = false;
 			bool dropped = false;
+			bool hovered = false;
 			ItemDrag payload;
+			SlotAddress dropTarget;
+			olc::vf2d screenMin;
+			olc::vf2d screenMax;
 		};
 
 		struct DropPreview {
 			bool active = false;
 			olc::vf2d position;
-			Item item = Item::None;
+			ItemId item = ItemNone;
 			bool shelf = false;
 			bool moving = false;
 			uint8_t movingShelf = 0;
+		};
+
+		struct OpenContainerWindow {
+			SlotAddress address;
+			olc::vf2d anchor;
 		};
 
 		bool UpdatePlay(float fElapsedTime);
@@ -41,6 +50,7 @@ namespace Trauma {
 		void UpdateClientInput(float deltaTime);
 		void UpdateInventoryInput();
 		void UpdateGrabMode();
+		void UpdateGunFire();
 		void UpdateDropMode();
 		void UpdateDropPreview();
 		InputState SampleInput(bool bJump) const;
@@ -54,21 +64,27 @@ namespace Trauma {
 
 		void DrawScene();
 		void DrawObjects();
+		void DrawShotTracers();
 		void DrawObject(const Client::ObjectView& object, const olc::vf2d& position,
 			float angle, olc::Pixel colour);
 		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
-		void DrawItem(Item item, const ObjectState& body);
+		void DrawItem(ItemId item, const ObjectState& body);
 		void DrawShelfBoards(const olc::vf2d& position, olc::Pixel colour);
 		void DrawDropPreview();
-		void DrawItemGhost(Item item);
+		void DrawItemGhost(ItemId item);
 
 		void BuildUi();
 		void BuildStatus();
 		void BuildHud();
 		void BuildPickupLabel();
 		void BuildPauseMenu();
-		SlotResult BuildSlot(const char* id, bool clothing, size_t index, Item item,
-			const char* caption, bool selected);
+		SlotResult BuildSlot(const char* id, const Inventory& inventory,
+			const SlotAddress& address, const ItemStack& stack, const char* caption, bool selected);
+		bool IsContainerOpen(const SlotAddress& address) const;
+		void ToggleContainer(const SlotAddress& address, const olc::vf2d& anchor);
+		void CloseContainer(const SlotAddress& address);
+		void BuildContainerWindow(const Inventory& inventory, const SlotAddress& address,
+			const olc::vf2d& anchor);
 		void ResolveItemDrag();
 
 	private:
@@ -93,6 +109,7 @@ namespace Trauma {
 		bool paused = false;
 		bool quitting = false;
 		uint8_t hotbarSelection = 0;
+		std::vector<OpenContainerWindow> openContainers;
 
 		ItemDrag drag;
 		bool dragDelivered = false;

@@ -38,6 +38,7 @@ namespace Trauma {
 			InputState lastInput;
 			int missingInputTicks = 0;
 			uint32_t highestReceived = 0;
+			uint32_t nextShotTick = 0;
 			std::chrono::steady_clock::time_point lastSeen;
 		};
 
@@ -46,7 +47,7 @@ namespace Trauma {
 			olc::vf2d position;
 			PhysicsWorld physics;
 			std::array<ObjectState, MaxShelfItems> items{};
-			std::array<Item, MaxShelfItems> kinds{};
+			std::array<ItemStack, MaxShelfItems> stacks{};
 		};
 
 		bool Open(uint16_t port);
@@ -67,6 +68,8 @@ namespace Trauma {
 		bool HandleInventoryPickup(ClientSlot& client, Net::PacketReader& reader);
 		bool HandleShelfPickup(ClientSlot& client, Net::PacketReader& reader);
 		void HandleShelf(const Net::Endpoint& endpoint, Net::PacketReader& reader);
+		void HandleShoot(const Net::Endpoint& endpoint, Net::PacketReader& reader);
+		void DestroyShelf(Shelf& shelf);
 		void ClearShelves();
 		void StepShelves();
 		void CreateShelf(Shelf& shelf, const olc::vf2d& position);
@@ -78,7 +81,7 @@ namespace Trauma {
 		std::array<ClientSlot, MaxPlayers> clients;
 		std::array<ObjectState, TestBodyCount> bodies;
 		std::array<ObjectState, MaxWorldItems> items;
-		std::array<Item, MaxWorldItems> itemKinds{};
+		std::array<ItemStack, MaxWorldItems> itemStacks{};
 		std::array<Shelf, MaxShelves> shelves{};
 		std::thread worker;
 		std::atomic<bool> running = false;

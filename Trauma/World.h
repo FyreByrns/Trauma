@@ -44,6 +44,11 @@ namespace Trauma {
 				{ ShelfHalfWidth, ShelfBoardHalfHeight }, 0.0f) };
 	}
 
+	inline Terrain ShelfBounds(const olc::vf2d& position) {
+		return { { position.x - ShelfHalfWidth, position.y - ShelfBoardSpacing },
+			{ ShelfHalfWidth * 2.0f, ShelfBoardSpacing + ShelfBoardHalfHeight * 2.0f } };
+	}
+
 	inline bool ShelfSlotAt(const olc::vf2d& local, float& boardTop) {
 		if (std::abs(local.x) > ShelfSlotHalfWidth)
 			return false;
@@ -132,6 +137,38 @@ namespace Trauma {
 					std::clamp((hit - start).dot(delta) / length2, 0.0f, 1.0f));
 		}
 		return nearest;
+	}
+
+	inline bool SegmentRectFraction(const olc::vf2d& start, const olc::vf2d& end,
+		const Terrain& rect, float& fraction) {
+		const olc::vf2d delta = end - start;
+		const olc::vf2d low = rect.pos;
+		const olc::vf2d high = rect.pos + rect.size;
+		float nearFraction = 0.0f;
+		float farFraction = 1.0f;
+		for (int axis = 0; axis < 2; ++axis) {
+			const float origin = axis == 0 ? start.x : start.y;
+			const float direction = axis == 0 ? delta.x : delta.y;
+			const float lo = axis == 0 ? low.x : low.y;
+			const float hi = axis == 0 ? high.x : high.y;
+			if (std::abs(direction) < 0.0001f) {
+				if (origin < lo || origin > hi)
+					return false;
+				continue;
+			}
+			float axisNear = (lo - origin) / direction;
+			float axisFar = (hi - origin) / direction;
+			if (axisNear > axisFar)
+				std::swap(axisNear, axisFar);
+			nearFraction = std::max(nearFraction, axisNear);
+			farFraction = std::min(farFraction, axisFar);
+			if (nearFraction > farFraction)
+				return false;
+		}
+		if (farFraction < 0.0f || nearFraction > 1.0f)
+			return false;
+		fraction = std::max(nearFraction, 0.0f);
+		return true;
 	}
 
 	inline float ReachableFraction(const olc::vf2d& start, const olc::vf2d& end, float radius,

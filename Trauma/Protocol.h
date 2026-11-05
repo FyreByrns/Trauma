@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 16;
+	constexpr uint32_t ProtocolVersion = 22;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
@@ -20,7 +20,8 @@ namespace Trauma::Net {
 		Input = 3,
 		Snapshot = 4,
 		Inventory = 5,
-		Shelf = 6
+		Shelf = 6,
+		Shoot = 7
 	};
 
 	enum class InventoryAction : uint8_t {
@@ -206,20 +207,118 @@ namespace Trauma::Net {
 		return reader.Read(sequence) && ReadInput(reader, input);
 	}
 
-	inline void WriteInventoryMove(PacketWriter& packet, bool fromClothing, uint8_t from,
-		bool toClothing, uint8_t to) {
-		packet.Write(static_cast<uint8_t>(InventoryAction::Move));
-		packet.Write(static_cast<uint8_t>(fromClothing ? 1 : 0));
-		packet.Write(from);
-		packet.Write(static_cast<uint8_t>(toClothing ? 1 : 0));
-		packet.Write(to);
+	inline void WriteSlotAddress(PacketWriter& packet, const SlotAddress& address) {
+		packet.Write(static_cast<uint8_t>(address.kind));
+		packet.Write(address.index);
+		packet.Write(address.depth);
+		for (size_t i = 0; i < address.depth; ++i)
+			packet.Write(address.path[i]);
 	}
 
-	inline void WriteInventoryDrop(PacketWriter& packet, bool fromClothing, uint8_t from,
+	inline bool ReadSlotAddress(PacketReader& reader, SlotAddress& address) {
+		uint8_t kind = 0;
+		uint8_t index = 0;
+		uint8_t depth = 0;
+		if (!reader.Read(kind) || !reader.Read(index) || !reader.Read(depth)
+			|| kind > static_cast<uint8_t>(SlotKind::Feet) || depth > MaxContainerDepth)
+			return false;
+		if (kind == static_cast<uint8_t>(SlotKind::Hotbar)) {
+			if (index >= HotbarSlots)
+				return false;
+		}
+		else if (index != 0) {
+			return false;
+		}
+		address = SlotAddress{};
+		address.kind = static_cast<SlotKind>(kind);
+		address.index = index;
+		address.depth = depth;
+		for (size_t i = 0; i < depth; ++i)
+			if (!reader.Read(address.path[i]) || address.path[i] >= MaxItemContainerSlots)
+				return false;
+		return true;
+	}
+
+	inline void WriteItemStack(PacketWriter& packet, const ItemStack& stack) {
+		packet.Write(stack.item);
+		packet.Write(stack.quantity);
+		const bool hasContents = stack.item != ItemNone && stack.container
+			&& !IsItemContainerEmpty(stack);
+		packet.Write(static_cast<uint8_t>(hasContents ? 1 : 0));
+		if (!hasContents)
+			return;
+		for (size_t slot = 0; slot < ItemContainerCapacity(stack.item); ++slot)
+			WriteItemStack(packet, stack.container->slots[slot]);
+	}
+
+	inline bool ReadItemStack(PacketReader& reader, ItemStack& stack, size_t depth = 0) {
+		ItemId item = ItemNone;
+		uint8_t quantity = 0;
+		uint8_t hasContents = 0;
+		if (!reader.Read(item) || !reader.Read(quantity) || !reader.Read(hasContents) || hasContents > 1)
+			return false;
+		if (item == ItemNone)
+			return quantity == 0 && hasContents == 0;
+
+		if (!IsValidItemId(item) || quantity > ItemMaxQuantity(item))
+			return false;
+		const size_t capacity = ItemContainerCapacity(item);
+		if (capacity == 0 && hasContents != 0)
+			return false;
+
+		ItemStack parsed;
+		parsed.item = item;
+		parsed.quantity = quantity;
+		if (capacity > 0) {
+			if (hasContents && depth >= MaxContainerDepth)
+				return false;
+			parsed.container = std::make_unique<ItemContainer>();
+			if (hasContents) {
+				for (size_t slot = 0; slot < capacity; ++slot)
+					if (!ReadItemStack(reader, parsed.container->slots[slot], depth + 1))
+						return false;
+			}
+		}
+		stack = std::move(parsed);
+		return true;
+	}
+
+	inline bool ReadItemBody(PacketReader& reader, ItemStack& stack, ObjectState& body) {
+		if (!ReadItemStack(reader, stack))
+			return false;
+		body = DeadItemBody();
+		if (stack.item == ItemNone)
+			return true;
+		body = CreateItemBody(stack.item, { 0.0f, 0.0f });
+		olc::vf2d position;
+		olc::vf2d velocity;
+		float angle = 0.0f;
+		float angularVelocity = 0.0f;
+		if (!reader.Read(position.x) || !reader.Read(position.y)
+			|| !reader.Read(velocity.x) || !reader.Read(velocity.y)
+			|| !reader.Read(angle) || !reader.Read(angularVelocity)
+			|| !std::isfinite(position.x) || !std::isfinite(position.y)
+			|| !std::isfinite(velocity.x) || !std::isfinite(velocity.y)
+			|| !std::isfinite(angle) || !std::isfinite(angularVelocity))
+			return false;
+		body.position = position;
+		body.velocity = velocity;
+		body.angle = angle;
+		body.angularVelocity = angularVelocity;
+		return true;
+	}
+
+	inline void WriteInventoryMove(PacketWriter& packet, const SlotAddress& from,
+		const SlotAddress& to) {
+		packet.Write(static_cast<uint8_t>(InventoryAction::Move));
+		WriteSlotAddress(packet, from);
+		WriteSlotAddress(packet, to);
+	}
+
+	inline void WriteInventoryDrop(PacketWriter& packet, const SlotAddress& from,
 		const olc::vf2d& position) {
 		packet.Write(static_cast<uint8_t>(InventoryAction::Drop));
-		packet.Write(static_cast<uint8_t>(fromClothing ? 1 : 0));
-		packet.Write(from);
+		WriteSlotAddress(packet, from);
 		packet.Write(position.x);
 		packet.Write(position.y);
 	}
@@ -248,11 +347,19 @@ namespace Trauma::Net {
 		packet.Write(position.y);
 	}
 
-	inline void WriteWorldItems(PacketWriter& packet, const std::array<Item, MaxWorldItems>& kinds,
+	inline void WriteShoot(PacketWriter& packet, uint8_t hotbar, const olc::vf2d& target) {
+		packet.Write(hotbar);
+		packet.Write(target.x);
+		packet.Write(target.y);
+	}
+
+	inline void WriteWorldItems(PacketWriter& packet, const std::array<ItemStack, MaxWorldItems>& stacks,
 		const std::array<ObjectState, MaxWorldItems>& bodies) {
 		packet.Write(static_cast<uint8_t>(MaxWorldItems));
 		for (size_t i = 0; i < MaxWorldItems; ++i) {
-			packet.Write(static_cast<uint8_t>(kinds[i]));
+			WriteItemStack(packet, stacks[i]);
+			if (stacks[i].item == ItemNone)
+				continue;
 			packet.Write(bodies[i].position.x);
 			packet.Write(bodies[i].position.y);
 			packet.Write(bodies[i].velocity.x);
@@ -260,6 +367,18 @@ namespace Trauma::Net {
 			packet.Write(bodies[i].angle);
 			packet.Write(bodies[i].angularVelocity);
 		}
+	}
+
+	inline void WriteWorldItem(PacketWriter& packet, const ItemStack& stack, const ObjectState& body) {
+		WriteItemStack(packet, stack);
+		if (stack.item == ItemNone)
+			return;
+		packet.Write(body.position.x);
+		packet.Write(body.position.y);
+		packet.Write(body.velocity.x);
+		packet.Write(body.velocity.y);
+		packet.Write(body.angle);
+		packet.Write(body.angularVelocity);
 	}
 
 	inline void WriteRagdoll(PacketWriter& packet, uint8_t id, const RagdollState& ragdoll) {
@@ -277,10 +396,11 @@ namespace Trauma::Net {
 			packet.Write(grip.anchor.y);
 			packet.Write(grip.angleOffset);
 		}
-		for (const Item item : ragdoll.inventory.hotbar)
-			packet.Write(static_cast<uint8_t>(item));
-		for (const Item item : ragdoll.inventory.clothing)
-			packet.Write(static_cast<uint8_t>(item));
+		for (const ItemStack& stack : ragdoll.inventory.hotbar)
+			WriteItemStack(packet, stack);
+		for (const ItemStack& stack : ragdoll.inventory.clothing)
+			WriteItemStack(packet, stack);
+		packet.Write(ragdoll.inventory.shelfKits);
 		packet.Write(ragdoll.inventory.selected);
 		for (const ObjectState& part : ragdoll.parts) {
 			packet.Write(part.position.x);
@@ -292,7 +412,7 @@ namespace Trauma::Net {
 	}
 
 	inline bool ReadRagdoll(PacketReader& reader, uint8_t& id, RagdollState& ragdoll) {
-		ragdoll = CreateRagdoll({0.0f, 0.0f});
+		ragdoll = CreateRagdoll({ 0.0f, 0.0f });
 		if (!reader.Read(id) || !reader.Read(ragdoll.parts[Torso].lastInput)
 			|| !reader.Read(ragdoll.facing) || !reader.Read(ragdoll.gaitPhase)
 			|| !reader.Read(ragdoll.crouchTurn) || !std::isfinite(ragdoll.crouchTurn)
@@ -305,19 +425,28 @@ namespace Trauma::Net {
 				|| !reader.Read(grip.angleOffset) || !std::isfinite(grip.angleOffset)
 				|| grip.target > TestTerrain().size() + TestBodyCount + MaxWorldItems)
 				return false;
-		for (Item& item : ragdoll.inventory.hotbar) {
-			uint8_t stored = 0;
-			if (!reader.Read(stored) || stored > static_cast<uint8_t>(Item::Shelf))
+
+		for (size_t slot = 0; slot < ragdoll.inventory.hotbar.size(); ++slot) {
+			ItemStack stack;
+			if (!ReadItemStack(reader, stack))
 				return false;
-			item = static_cast<Item>(stored);
-		}
-		for (Item& item : ragdoll.inventory.clothing) {
-			uint8_t stored = 0;
-			if (!reader.Read(stored) || stored > static_cast<uint8_t>(Item::Boots)
-				|| (stored != 0 && !IsClothing(static_cast<Item>(stored))))
+			if (stack.item != ItemNone
+				&& !SlotAcceptsStack(ragdoll.inventory, HotbarAddress(slot), stack))
 				return false;
-			item = static_cast<Item>(stored);
+			ragdoll.inventory.hotbar[slot] = std::move(stack);
 		}
+		for (size_t slot = 0; slot < ragdoll.inventory.clothing.size(); ++slot) {
+			ItemStack stack;
+			if (!ReadItemStack(reader, stack))
+				return false;
+			if (stack.item != ItemNone
+				&& !SlotAcceptsStack(ragdoll.inventory, ClothingAddress(slot), stack))
+				return false;
+			ragdoll.inventory.clothing[slot] = std::move(stack);
+		}
+		if (!reader.Read(ragdoll.inventory.shelfKits) || ragdoll.inventory.shelfKits > MaxShelfKits
+			|| (ragdoll.inventory.shelfKits == 0 && HasShelfTool(ragdoll.inventory)))
+			return false;
 		if (!reader.Read(ragdoll.inventory.selected) || ragdoll.inventory.selected >= HotbarSlots)
 			return false;
 		for (ObjectState& part : ragdoll.parts) {

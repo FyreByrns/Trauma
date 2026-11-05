@@ -55,7 +55,7 @@ namespace Trauma {
 		bodies = CreateTestBodies();
 		for (size_t index = 0; index < items.size(); ++index) {
 			items[index] = DeadItemBody();
-			itemKinds[index] = Item::None;
+			itemStacks[index] = ItemStack{};
 		}
 
 		tick = 0;
@@ -113,6 +113,9 @@ namespace Trauma {
 					break;
 				case Net::MessageType::Shelf:
 					HandleShelf(from, reader);
+					break;
+				case Net::MessageType::Shoot:
+					HandleShoot(from, reader);
 					break;
 				default:
 					break;
@@ -197,7 +200,7 @@ namespace Trauma {
 		packet.Write(count);
 		for (size_t body = 0; body < bodies.size(); ++body)
 			Net::WriteObjectState(packet, static_cast<uint8_t>(MaxPlayers + body + 1), bodies[body]);
-		Net::WriteWorldItems(packet, itemKinds, items);
+		Net::WriteWorldItems(packet, itemStacks, items);
 		packet.Write(static_cast<uint8_t>(MaxShelves));
 		for (const Shelf& shelf : shelves) {
 			packet.Write(static_cast<uint8_t>(shelf.active ? 1 : 0));
@@ -206,14 +209,8 @@ namespace Trauma {
 			packet.Write(shelf.position.x);
 			packet.Write(shelf.position.y);
 			packet.Write(static_cast<uint8_t>(MaxShelfItems));
-			for (size_t i = 0; i < MaxShelfItems; ++i) {
-				packet.Write(static_cast<uint8_t>(shelf.kinds[i]));
-				if (shelf.kinds[i] == Item::None)
-					continue;
-				packet.Write(shelf.items[i].position.x);
-				packet.Write(shelf.items[i].position.y);
-				packet.Write(shelf.items[i].angle);
-			}
+			for (size_t i = 0; i < MaxShelfItems; ++i)
+				Net::WriteWorldItem(packet, shelf.stacks[i], shelf.items[i]);
 		}
 		SendSnapshotTo(recipients, packet);
 	}
@@ -342,30 +339,22 @@ namespace Trauma {
 	}
 
 	bool Server::HandleInventoryMove(ClientSlot& client, Net::PacketReader& reader) {
-		uint8_t fromClothing = 0;
-		uint8_t from = 0;
-		uint8_t toClothing = 0;
-		uint8_t to = 0;
-		if (!reader.Read(fromClothing) || !reader.Read(from) || !reader.Read(toClothing) || !reader.Read(to))
+		SlotAddress from;
+		SlotAddress to;
+		if (!Net::ReadSlotAddress(reader, from) || !Net::ReadSlotAddress(reader, to))
 			return false;
-
-		return MoveInventoryItem(client.player.inventory, fromClothing != 0, from, toClothing != 0, to);
+		return MoveInventoryItem(client.player.inventory, from, to);
 	}
 
 	bool Server::HandleInventoryPickup(ClientSlot& client, Net::PacketReader& reader) {
 		uint8_t index = 0;
 		if (!reader.Read(index) || index >= items.size())
 			return false;
-		if (itemKinds[index] == Item::None)
+		if (itemStacks[index].item == ItemNone)
 			return false;
 
 		Inventory& inventory = client.player.inventory;
-		size_t slot = inventory.hotbar.size();
-		for (size_t candidate = 0; candidate < inventory.hotbar.size(); ++candidate)
-			if (inventory.hotbar[candidate] == Item::None) {
-				slot = candidate;
-				break;
-			}
+		const size_t slot = FindEmptyHotbarSlot(inventory, itemStacks[index]);
 		if (slot >= inventory.hotbar.size())
 			return false;
 
@@ -381,8 +370,8 @@ namespace Trauma {
 		if (!holding)
 			return false;
 
-		inventory.hotbar[slot] = itemKinds[index];
-		itemKinds[index] = Item::None;
+		inventory.hotbar[slot] = std::move(itemStacks[index]);
+		itemStacks[index] = ItemStack{};
 		items[index] = DeadItemBody();
 		return true;
 	}
@@ -395,7 +384,7 @@ namespace Trauma {
 			return false;
 
 		Shelf& shelf = shelves[shelfIndex];
-		if (!shelf.active || shelf.kinds[itemIndex] == Item::None)
+		if (!shelf.active || shelf.stacks[itemIndex].item == ItemNone)
 			return false;
 
 		ObjectState world = shelf.items[itemIndex];
@@ -404,17 +393,12 @@ namespace Trauma {
 			return false;
 
 		Inventory& inventory = client.player.inventory;
-		size_t slot = inventory.hotbar.size();
-		for (size_t candidate = 0; candidate < inventory.hotbar.size(); ++candidate)
-			if (inventory.hotbar[candidate] == Item::None) {
-				slot = candidate;
-				break;
-			}
+		const size_t slot = FindEmptyHotbarSlot(inventory, shelf.stacks[itemIndex]);
 		if (slot >= inventory.hotbar.size())
 			return false;
 
-		inventory.hotbar[slot] = shelf.kinds[itemIndex];
-		shelf.kinds[itemIndex] = Item::None;
+		inventory.hotbar[slot] = std::move(shelf.stacks[itemIndex]);
+		shelf.stacks[itemIndex] = ItemStack{};
 		shelf.items[itemIndex] = DeadItemBody();
 		return true;
 	}
@@ -432,7 +416,7 @@ namespace Trauma {
 		const bool placing = action == static_cast<uint8_t>(Net::ShelfAction::Place);
 		if (!placing && action != static_cast<uint8_t>(Net::ShelfAction::Move))
 			return;
-		if (!HasShelfTool(client->player.inventory))
+		if (!HasShelfTool(client->player.inventory) || client->player.inventory.shelfKits == 0)
 			return;
 
 		uint8_t index = 0;
@@ -451,6 +435,7 @@ namespace Trauma {
 			for (Shelf& shelf : shelves)
 				if (!shelf.active) {
 					CreateShelf(shelf, position);
+					ConsumeShelfKit(client->player.inventory);
 					return;
 				}
 			return;
@@ -464,15 +449,78 @@ namespace Trauma {
 		shelf.position = position;
 	}
 
-	void Server::ClearShelves() {
-		for (Shelf& shelf : shelves) {
-			if (shelf.active)
-				DestroyWorld(shelf.physics);
-			shelf.active = false;
-			shelf.position = {};
-			shelf.items = {};
-			shelf.kinds = {};
+	void Server::HandleShoot(const Net::Endpoint& endpoint, Net::PacketReader& reader) {
+		ClientSlot* client = FindClient(endpoint);
+		if (!client)
+			return;
+
+		uint8_t hotbar = 0;
+		olc::vf2d target;
+		if (!reader.Read(hotbar) || !reader.Read(target.x) || !reader.Read(target.y))
+			return;
+		client->lastSeen = std::chrono::steady_clock::now();
+
+		Inventory& inventory = client->player.inventory;
+		if (hotbar >= HotbarSlots || !IsGun(inventory.hotbar[hotbar].item))
+			return;
+		if (!LoadedMagazine(inventory, hotbar))
+			return;
+		if (tick < client->nextShotTick)
+			return;
+		if (!std::isfinite(target.x) || !std::isfinite(target.y))
+			return;
+
+		const olc::vf2d origin = client->player.parts[RightHand].position;
+		const olc::vf2d delta = target - origin;
+		const float distance = delta.mag();
+		if (distance < 0.001f)
+			return;
+		const olc::vf2d end = origin + delta * (std::min(distance, GunRange) / distance);
+
+		if (!ConsumeGunRound(inventory, hotbar))
+			return;
+		client->nextShotTick = tick + GunCooldownTicks;
+
+		float wallFraction = 2.0f;
+		for (const Terrain& terrain : TestTerrain()) {
+			float fraction = 0.0f;
+			if (SegmentRectFraction(origin, end, terrain, fraction))
+				wallFraction = std::min(wallFraction, fraction);
 		}
+
+		size_t shelfHit = MaxShelves;
+		float shelfFraction = 2.0f;
+		for (size_t index = 0; index < shelves.size(); ++index) {
+			if (!shelves[index].active)
+				continue;
+			float fraction = 0.0f;
+			if (SegmentRectFraction(origin, end, ShelfBounds(shelves[index].position), fraction)
+				&& fraction < shelfFraction) {
+				shelfFraction = fraction;
+				shelfHit = index;
+			}
+		}
+		if (shelfHit >= shelves.size() || shelfFraction >= wallFraction)
+			return;
+
+		for (const ItemStack& stack : shelves[shelfHit].stacks)
+			if (stack.item != ItemNone)
+				return;
+		DestroyShelf(shelves[shelfHit]);
+	}
+
+	void Server::DestroyShelf(Shelf& shelf) {
+		if (shelf.active)
+			DestroyWorld(shelf.physics);
+		shelf.active = false;
+		shelf.position = {};
+		shelf.items = {};
+		shelf.stacks = {};
+	}
+
+	void Server::ClearShelves() {
+		for (Shelf& shelf : shelves)
+			DestroyShelf(shelf);
 	}
 
 	void Server::StepShelves() {
@@ -481,20 +529,20 @@ namespace Trauma {
 				continue;
 
 			for (size_t i = 0; i < MaxShelfItems; ++i)
-				if (shelf.kinds[i] != Item::None)
+				if (shelf.stacks[i].item != ItemNone)
 					EnsureBody(shelf.physics, shelf.items[i]);
 
 			b2World_Step(shelf.physics.world, FixedDeltaTime, SolverSubSteps);
 
 			for (size_t i = 0; i < MaxShelfItems; ++i) {
-				if (shelf.kinds[i] == Item::None)
+				if (shelf.stacks[i].item == ItemNone)
 					continue;
 				ObjectState& item = shelf.items[i];
 				const b2BodyId body = EnsureBody(shelf.physics, item);
 				SyncBody(item, body);
 				if (!std::isfinite(item.position.x) || !std::isfinite(item.position.y)
 					|| item.position.y > 20.0f || std::abs(item.position.x) > 80.0f) {
-					ObjectState reset = CreateItemBody(shelf.kinds[i], { 0.0f, 0.0f });
+					ObjectState reset = CreateItemBody(shelf.stacks[i].item, { 0.0f, 0.0f });
 					reset.position.y = -reset.radius - 1.0f;
 					reset.velocity = { 0.0f, 40.0f };
 					item = reset;
@@ -513,30 +561,23 @@ namespace Trauma {
 			shelf.physics.terrain.push_back(BuildBody(shelf.physics, board));
 		for (size_t i = 0; i < MaxShelfItems; ++i) {
 			shelf.items[i] = DeadItemBody();
-			shelf.kinds[i] = Item::None;
+			shelf.stacks[i] = ItemStack{};
 		}
 	}
 
 	bool Server::HandleInventoryDrop(ClientSlot& client, Net::PacketReader& reader) {
-		uint8_t fromClothing = 0;
-		uint8_t from = 0;
+		SlotAddress from;
 		olc::vf2d position;
-		if (!reader.Read(fromClothing) || !reader.Read(from) || !reader.Read(position.x) || !reader.Read(position.y))
+		if (!Net::ReadSlotAddress(reader, from) || !reader.Read(position.x) || !reader.Read(position.y))
 			return false;
 		if (!std::isfinite(position.x) || !std::isfinite(position.y)
 			|| std::abs(position.x) > 2000.0f || position.y < -800.0f || position.y > 1000.0f)
 			return false;
 
-		const bool clothing = fromClothing != 0;
-		const size_t slotCount = clothing ? client.player.inventory.clothing.size()
-			: client.player.inventory.hotbar.size();
-		if (from >= slotCount)
+		const ItemStack* source = ResolveSlot(client.player.inventory, from);
+		if (!source || !IsWorldItem(source->item))
 			return false;
-		const Item item = clothing ? client.player.inventory.clothing[from]
-			: client.player.inventory.hotbar[from];
-		if (item == Item::None || item == Item::Shelf)
-			return false;
-
+		const ItemId item = source->item;
 		const ObjectState probe = CreateItemBody(item, position);
 		if (probe.radius <= 0.0f)
 			return false;
@@ -546,8 +587,8 @@ namespace Trauma {
 		size_t obstacleCount = 0;
 		for (const ObjectState& object : bodies)
 			obstacles[obstacleCount++] = object;
-		for (size_t other = 0; other < items.size(); ++other)
-			if (itemKinds[other] != Item::None)
+		for (size_t other = 0; other < itemStacks.size(); ++other)
+			if (itemStacks[other].item != ItemNone)
 				obstacles[obstacleCount++] = items[other];
 		const olc::vf2d hand = DropHandOrigin(client.player, position);
 		const olc::vf2d drop = ClampDropPosition(hand, position, probe.radius,
@@ -564,37 +605,39 @@ namespace Trauma {
 
 			size_t shelfSlot = MaxShelfItems;
 			for (size_t candidate = 0; candidate < MaxShelfItems; ++candidate)
-				if (shelf.kinds[candidate] == Item::None) {
+				if (shelf.stacks[candidate].item == ItemNone) {
 					shelfSlot = candidate;
 					break;
 				}
 			if (shelfSlot >= MaxShelfItems)
 				continue;
-			if (TakeInventoryItem(client.player.inventory, clothing, from) == Item::None)
-				return false;
 
+			ItemStack carried;
+			if (!RemoveStack(client.player.inventory, from, carried))
+				return false;
 			ObjectState body = CreateItemBody(item, local);
 			body.velocity = { 0.0f, 40.0f };
 			shelf.items[shelfSlot] = body;
-			shelf.kinds[shelfSlot] = item;
+			shelf.stacks[shelfSlot] = std::move(carried);
 			return true;
 		}
 
-		size_t slot = items.size();
-		for (size_t candidate = 0; candidate < items.size(); ++candidate)
-			if (itemKinds[candidate] == Item::None) {
+		size_t slot = itemStacks.size();
+		for (size_t candidate = 0; candidate < itemStacks.size(); ++candidate)
+			if (itemStacks[candidate].item == ItemNone) {
 				slot = candidate;
 				break;
 			}
-		if (slot >= items.size())
-			return false;
-		if (TakeInventoryItem(client.player.inventory, clothing, from) == Item::None)
+		if (slot >= itemStacks.size())
 			return false;
 
+		ItemStack carried;
+		if (!RemoveStack(client.player.inventory, from, carried))
+			return false;
 		ObjectState body = CreateItemBody(item, drop);
 		body.velocity = { 0.0f, 40.0f };
 		items[slot] = body;
-		itemKinds[slot] = item;
+		itemStacks[slot] = std::move(carried);
 		return true;
 	}
 

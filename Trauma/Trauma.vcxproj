@@ -136,6 +136,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Trauma.cpp" />
+    <ClCompile Include="Items.cpp" />
     <ClCompile Include="Game.cpp" />
     <ClCompile Include="Server.cpp" />
     <ClCompile Include="Client.cpp" />
@@ -158,6 +159,9 @@
     <ClInclude Include="Physics.h" />
     <ClInclude Include="World.h" />
     <ClInclude Include="Items.h" />
+    <Content Include="data\items.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <ClInclude Include="Ragdoll.h" />
     <ClInclude Include="Simulation.h" />
     <ClInclude Include="Json.h" />

@@ -7,6 +7,7 @@
 
 namespace {
 	constexpr size_t MaxPredictionSnapshots = 96;
+	constexpr float ShotTracerLifetime = 0.08f;
 	constexpr float ReconcilePositionTolerance = 3.0f;
 	constexpr float ReconcileAngleTolerance = 0.1f;
 	constexpr float ReconcileSpeedTolerance = 8.0f;
@@ -74,6 +75,8 @@ namespace Trauma {
 		players.clear();
 		worldItems = {};
 		shelves = {};
+		shotTracers.clear();
+		shotCooldown = 0.0f;
 		pending.clear();
 		snapshots.clear();
 		assemblingTick = 0;
@@ -154,6 +157,15 @@ namespace Trauma {
 			return;
 		}
 
+		shotCooldown = std::max(0.0f, shotCooldown - fElapsedTime);
+		for (auto tracer = shotTracers.begin(); tracer != shotTracers.end();) {
+			tracer->life -= fElapsedTime;
+			if (tracer->life <= 0.0f)
+				tracer = shotTracers.erase(tracer);
+			else
+				++tracer;
+		}
+
 		SmoothRemoteObjects(fElapsedTime);
 	}
 
@@ -196,6 +208,10 @@ namespace Trauma {
 		return shelves;
 	}
 
+	const std::vector<Client::ShotTracer>& Client::GetShotTracers() const {
+		return shotTracers;
+	}
+
 	int Client::ShelfAt(const olc::vf2d& position) const {
 		for (size_t i = 0; i < shelves.size(); ++i) {
 			const ShelfView& shelf = shelves[i];
@@ -221,11 +237,13 @@ namespace Trauma {
 	}
 
 	void Client::PlaceShelf(const olc::vf2d& position) {
-		if (status != Status::Connected)
+		if (status != Status::Connected || predicted.inventory.shelfKits == 0
+			|| !HasShelfTool(predicted.inventory))
 			return;
 		Net::PacketWriter packet(Net::MessageType::Shelf);
 		Net::WriteShelfPlace(packet, position);
 		SendPacket(packet);
+		ConsumeShelfKit(predicted.inventory);
 	}
 
 	void Client::MoveShelf(uint8_t index, const olc::vf2d& position) {
@@ -238,36 +256,65 @@ namespace Trauma {
 		shelves[index].position = position;
 	}
 
-	void Client::MoveItem(bool fromClothing, size_t from, bool toClothing, size_t to) {
-		if (status != Status::Connected)
+	void Client::FireGun(size_t hotbar, const olc::vf2d& target) {
+		if (status != Status::Connected || shotCooldown > 0.0f)
 			return;
-		Net::PacketWriter packet(Net::MessageType::Inventory);
-		Net::WriteInventoryMove(packet, fromClothing, static_cast<uint8_t>(from), toClothing,
-			static_cast<uint8_t>(to));
+		Inventory& inventory = predicted.inventory;
+		if (hotbar >= inventory.hotbar.size() || !IsGun(inventory.hotbar[hotbar].item)
+			|| !LoadedMagazine(inventory, hotbar))
+			return;
+
+		const olc::vf2d origin = predicted.parts[RightHand].position;
+		const olc::vf2d delta = target - origin;
+		const float distance = delta.mag();
+		if (distance < 0.001f)
+			return;
+
+		Net::PacketWriter packet(Net::MessageType::Shoot);
+		Net::WriteShoot(packet, static_cast<uint8_t>(hotbar), target);
 		SendPacket(packet);
-		MoveInventoryItem(predicted.inventory, fromClothing, from, toClothing, to);
+		if (!ConsumeGunRound(inventory, hotbar))
+			return;
+
+		const olc::vf2d direction = delta * (1.0f / distance);
+		ShotTracer tracer;
+		tracer.start = origin;
+		tracer.end = origin + direction * std::min(distance, GunRange);
+		tracer.life = ShotTracerLifetime;
+		shotTracers.push_back(tracer);
+		shotCooldown = static_cast<float>(GunCooldownTicks) * FixedDeltaTime;
 	}
 
-	void Client::DropItem(bool fromClothing, size_t index, const olc::vf2d& position) {
+	void Client::MoveItem(const SlotAddress& from, const SlotAddress& to) {
 		if (status != Status::Connected)
 			return;
-		const Item item = fromClothing
-			? (index < predicted.inventory.clothing.size() ? predicted.inventory.clothing[index] : Item::None)
-			: (index < predicted.inventory.hotbar.size() ? predicted.inventory.hotbar[index] : Item::None);
-		if (item == Item::None || item == Item::Shelf)
+		Net::PacketWriter packet(Net::MessageType::Inventory);
+		Net::WriteInventoryMove(packet, from, to);
+		SendPacket(packet);
+		MoveInventoryItem(predicted.inventory, from, to);
+	}
+
+	void Client::DropItem(const SlotAddress& from, const olc::vf2d& position) {
+		if (status != Status::Connected)
 			return;
+		const ItemStack* source = ResolveSlot(predicted.inventory, from);
+		if (!source || !IsWorldItem(source->item))
+			return;
+		const ItemId item = source->item;
 
 		Net::PacketWriter packet(Net::MessageType::Inventory);
-		Net::WriteInventoryDrop(packet, fromClothing, static_cast<uint8_t>(index), position);
+		Net::WriteInventoryDrop(packet, from, position);
 		SendPacket(packet);
-		TakeInventoryItem(predicted.inventory, fromClothing, index);
 
+		ItemStack carried;
+		if (!RemoveStack(predicted.inventory, from, carried))
+			return;
 		if (IsShelfDrop(position))
 			return;
 
 		for (WorldItem& slot : worldItems)
-			if (slot.item == Item::None) {
-				slot.item = item;
+			if (slot.stack.item == ItemNone) {
+				slot.stack = std::move(carried);
 				slot.body = CreateItemBody(item, position);
 				slot.body.velocity = { 0.0f, 40.0f };
 				break;
@@ -287,7 +334,7 @@ namespace Trauma {
 			return true;
 		}
 		for (size_t slot = 0; slot < worldItems.size(); ++slot)
-			if (worldItems[slot].item != Item::None
+			if (worldItems[slot].stack.item != ItemNone
 				&& HandsOnItem(predicted, worldItems[slot].body)) {
 				target = {};
 				target.index = static_cast<uint8_t>(slot);
@@ -299,7 +346,7 @@ namespace Trauma {
 				continue;
 			for (size_t itemIndex = 0; itemIndex < shelf.items.size(); ++itemIndex) {
 				const ShelfItemView& item = shelf.items[itemIndex];
-				if (item.item == Item::None)
+				if (item.stack.item == ItemNone)
 					continue;
 				ObjectState body = item.body;
 				body.position += shelf.position;
@@ -323,34 +370,33 @@ namespace Trauma {
 			if (target.index >= MaxShelves || target.item >= MaxShelfItems)
 				return;
 			ShelfView& shelf = shelves[target.index];
-			if (!shelf.active || shelf.items[target.item].item == Item::None)
+			if (!shelf.active || shelf.items[target.item].stack.item == ItemNone)
+				return;
+			const size_t slot = FindEmptyHotbarSlot(predicted.inventory,
+				shelf.items[target.item].stack);
+			if (slot >= predicted.inventory.hotbar.size())
 				return;
 
 			Net::PacketWriter packet(Net::MessageType::Inventory);
 			Net::WriteShelfPickup(packet, target.index, target.item);
 			SendPacket(packet);
 
-			for (Item& slot : predicted.inventory.hotbar)
-				if (slot == Item::None) {
-					slot = shelf.items[target.item].item;
-					break;
-				}
+			predicted.inventory.hotbar[slot] = shelf.items[target.item].stack;
 			shelf.items[target.item] = ShelfItemView{};
 			return;
 		}
 
-		if (target.index >= MaxWorldItems || worldItems[target.index].item == Item::None)
+		if (target.index >= MaxWorldItems || worldItems[target.index].stack.item == ItemNone)
+			return;
+		const size_t slot = FindEmptyHotbarSlot(predicted.inventory, worldItems[target.index].stack);
+		if (slot >= predicted.inventory.hotbar.size())
 			return;
 
 		Net::PacketWriter packet(Net::MessageType::Inventory);
 		Net::WriteInventoryPickup(packet, target.index);
 		SendPacket(packet);
 
-		for (Item& slot : predicted.inventory.hotbar)
-			if (slot == Item::None) {
-				slot = worldItems[target.index].item;
-				break;
-			}
+		predicted.inventory.hotbar[slot] = worldItems[target.index].stack;
 
 		const uint8_t targetId = static_cast<uint8_t>(TestTerrain().size() + TestBodyCount + target.index + 1);
 		for (HandGrip& grip : predicted.grips)
@@ -383,7 +429,7 @@ namespace Trauma {
 	}
 
 	void Client::PollPackets() {
-		std::array<uint8_t, 2048> buffer{};
+		std::array<uint8_t, 32768> buffer{};
 		while (true) {
 			Net::Endpoint from;
 			const int received = socket.ReceiveFrom(from, buffer.data(), buffer.size());
@@ -462,24 +508,14 @@ namespace Trauma {
 				return;
 
 			for (size_t i = 0; i < MaxWorldItems; ++i) {
-				uint8_t kind = 0;
-				olc::vf2d position;
-				olc::vf2d velocity;
-				float angle = 0.0f;
-				float spin = 0.0f;
-				if (!reader.Read(kind) || !reader.Read(position.x) || !reader.Read(position.y)
-					|| !reader.Read(velocity.x) || !reader.Read(velocity.y)
-					|| !reader.Read(angle) || !reader.Read(spin)
-					|| kind > static_cast<uint8_t>(Item::Boots)
-					|| !std::isfinite(position.x) || !std::isfinite(position.y)
-					|| !std::isfinite(velocity.x) || !std::isfinite(velocity.y)
-					|| !std::isfinite(angle) || !std::isfinite(spin))
+				ItemStack stack;
+				ObjectState body;
+				if (!Net::ReadItemBody(reader, stack, body))
 					return;
-				chunk.items[i].item = static_cast<Item>(kind);
-				chunk.items[i].body = CreateItemBody(static_cast<Item>(kind), position);
-				chunk.items[i].body.velocity = velocity;
-				chunk.items[i].body.angle = angle;
-				chunk.items[i].body.angularVelocity = spin;
+				if (stack.item != ItemNone && !IsWorldItem(stack.item))
+					return;
+				chunk.items[i].stack = std::move(stack);
+				chunk.items[i].body = body;
 			}
 
 			uint8_t shelfCount = 0;
@@ -503,25 +539,21 @@ namespace Trauma {
 					if (!reader.Read(itemCount) || itemCount != MaxShelfItems)
 						return;
 					for (size_t j = 0; j < MaxShelfItems; ++j) {
-						uint8_t kind = 0;
-						if (!reader.Read(kind) || kind > static_cast<uint8_t>(Item::Boots))
+						ItemStack stack;
+						ObjectState body;
+						if (!Net::ReadItemBody(reader, stack, body))
+							return;
+						if (stack.item != ItemNone && !IsWorldItem(stack.item))
 							return;
 						ShelfItemView& item = view.items[j];
-						item.item = static_cast<Item>(kind);
-						if (item.item == Item::None)
+						item.stack = std::move(stack);
+						if (item.stack.item == ItemNone)
 							continue;
-
-						olc::vf2d local;
-						float angle = 0.0f;
-						if (!reader.Read(local.x) || !reader.Read(local.y) || !reader.Read(angle)
-							|| !std::isfinite(local.x) || !std::isfinite(local.y)
-							|| !std::isfinite(angle) || std::abs(local.x) > 500.0f
-							|| std::abs(local.y) > 500.0f)
+						if (std::abs(body.position.x) > 500.0f || std::abs(body.position.y) > 500.0f)
 							return;
-						item.body = CreateItemBody(item.item, local);
-						item.body.angle = angle;
-						item.previousPosition = local;
-						item.previousAngle = angle;
+						item.body = body;
+						item.previousPosition = body.position;
+						item.previousAngle = body.angle;
 					}
 				}
 				chunk.shelves[i] = view;
@@ -622,7 +654,7 @@ namespace Trauma {
 			if (shelves[i].active && incoming.active) {
 				incoming.previousPosition = shelves[i].position;
 				for (size_t j = 0; j < MaxShelfItems; ++j) {
-					const bool hadItem = shelves[i].items[j].item != Item::None;
+					const bool hadItem = shelves[i].items[j].stack.item != ItemNone;
 					incoming.items[j].previousPosition = hadItem
 						? shelves[i].items[j].body.position : incoming.items[j].body.position;
 					incoming.items[j].previousAngle = hadItem
