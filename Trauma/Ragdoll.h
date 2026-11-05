@@ -45,6 +45,7 @@ namespace Trauma {
 		float gaitPhase = 0.0f;
 		uint8_t ladder = 0;
 		float ladderDetachTime = 0.0f;
+		float gunRecoil = 0.0f;
 		Inventory inventory;
 	};
 
@@ -86,6 +87,121 @@ namespace Trauma {
 		}
 		ragdoll.inventory = CreateInventory();
 		return ragdoll;
+	}
+
+	inline olc::vf2d HeldItemDirection(const std::array<olc::vf2d, PartCount>& pose,
+		const InputState& input, float facing, bool leftHand, ItemId item, float recoil = 0.0f) {
+		const bool gun = IsGun(item);
+		olc::vf2d direction = gun ? input.aim
+			: pose[leftHand ? LeftHand : RightHand] - pose[leftHand ? LeftElbow : RightElbow];
+		if (direction.mag2() < 0.0001f)
+			direction = { facing, 0.0f };
+		const float angle = std::atan2(direction.y, direction.x) + (gun ? recoil : 0.0f);
+		return Rotate({ 1.0f, 0.0f }, angle);
+	}
+
+	inline float HeldItemCenterOffset(ItemId item) {
+		const ItemBodyDefinition& body = ItemDefinitionFor(item).body;
+		if (body.shape == ItemBodyShape::Box)
+			return body.halfExtents.x * 0.7f;
+		if (body.shape == ItemBodyShape::Circle)
+			return body.radius * 0.5f;
+		return 0.0f;
+	}
+
+	inline float HeldItemMuzzleOffset(ItemId item) {
+		const ItemBodyDefinition& body = ItemDefinitionFor(item).body;
+		if (body.shape == ItemBodyShape::Box)
+			return body.halfExtents.x;
+		if (body.shape == ItemBodyShape::Circle)
+			return body.radius;
+		return 0.0f;
+	}
+
+	struct GunBarrelRay {
+		olc::vf2d origin;
+		olc::vf2d direction;
+	};
+
+	struct GunBarrelRays {
+		std::array<GunBarrelRay, MaxGunBarrels> rays{};
+		size_t count = 0;
+	};
+
+	inline GunBarrelRays ComputeGunBarrelRays(const RagdollState& ragdoll, size_t hotbar) {
+		GunBarrelRays result;
+		if (hotbar >= ragdoll.inventory.hotbar.size())
+			return result;
+		const ItemId item = ragdoll.inventory.hotbar[hotbar].item;
+		if (!IsGun(item))
+			return result;
+
+		std::array<olc::vf2d, PartCount> pose;
+		for (size_t i = 0; i < PartCount; ++i)
+			pose[i] = ragdoll.parts[i].position;
+		const bool leftHand = ItemHandControl(item) == HandControl::Left;
+		const olc::vf2d unit = HeldItemDirection(pose, ragdoll.input, ragdoll.facing,
+			leftHand, item, ragdoll.gunRecoil);
+		const olc::vf2d hand = pose[leftHand ? LeftHand : RightHand];
+		const olc::vf2d center = hand + unit * HeldItemCenterOffset(item);
+		const float bodyAngle = std::atan2(unit.y, unit.x);
+		const GunPoseDefinition& gunPose = ItemDefinitionFor(item).gunPose;
+		if (gunPose.barrelCount == 0) {
+			result.count = 1;
+			result.rays[0].origin = center + Rotate({ HeldItemMuzzleOffset(item), 0.0f }, bodyAngle);
+			result.rays[0].direction = unit;
+			return result;
+		}
+
+		result.count = std::min<size_t>(gunPose.barrelCount, MaxGunBarrels);
+		for (size_t i = 0; i < result.count; ++i) {
+			result.rays[i].origin = center + Rotate(gunPose.barrels[i].position, bodyAngle);
+			result.rays[i].direction = Rotate({ 1.0f, 0.0f },
+				bodyAngle + gunPose.barrels[i].angle);
+		}
+		return result;
+	}
+
+	inline float GunRecoilKick(const RagdollState& ragdoll, ItemId item) {
+		if (!IsGun(item))
+			return 0.0f;
+		const GunRecoilDefinition& recoil = ItemDefinitionFor(item).gunPose.recoil;
+		if (std::abs(recoil.amount) < 0.000001f)
+			return 0.0f;
+
+		std::array<olc::vf2d, PartCount> pose;
+		for (size_t i = 0; i < PartCount; ++i)
+			pose[i] = ragdoll.parts[i].position;
+		const bool leftHand = ItemHandControl(item) == HandControl::Left;
+		const olc::vf2d base = HeldItemDirection(pose, ragdoll.input, ragdoll.facing, leftHand, item);
+		const float cross = base.x * recoil.direction.y - base.y * recoil.direction.x;
+		return recoil.amount * cross;
+	}
+
+	inline void ApplyGunRecoil(RagdollState& ragdoll, size_t hotbar) {
+		if (hotbar >= ragdoll.inventory.hotbar.size())
+			return;
+		ragdoll.gunRecoil += GunRecoilKick(ragdoll, ragdoll.inventory.hotbar[hotbar].item);
+	}
+
+	inline void StepGunRecoil(RagdollState& ragdoll) {
+		const size_t selected = ragdoll.inventory.selected;
+		if (selected >= ragdoll.inventory.hotbar.size()) {
+			ragdoll.gunRecoil = 0.0f;
+			return;
+		}
+		const ItemId item = ragdoll.inventory.hotbar[selected].item;
+		if (!IsGun(item)) {
+			ragdoll.gunRecoil = 0.0f;
+			return;
+		}
+		const bool leftHand = ItemHandControl(item) == HandControl::Left;
+		const bool aiming = leftHand ? ragdoll.input.reachLeft : ragdoll.input.reachRight;
+		const GunRecoilDefinition& recoil = ItemDefinitionFor(item).gunPose.recoil;
+		const float recovery = aiming ? recoil.aimingRecovery : recoil.lowReadyRecovery;
+		ragdoll.gunRecoil *= std::exp(-std::max(0.0f, recovery) * FixedDeltaTime);
+		if (std::abs(ragdoll.gunRecoil) < 0.00001f)
+			ragdoll.gunRecoil = 0.0f;
 	}
 
 	inline std::array<olc::vf2d, PartCount> RagdollTargets(const RagdollState& ragdoll) {
@@ -151,6 +267,13 @@ namespace Trauma {
 			: movement == MovementState::Crouching ? 2.0f : 6.0f;
 		const float armSwing = movement == MovementState::Running ? 11.0f
 			: movement == MovementState::Crouching ? 2.0f : 7.0f;
+		const ItemId selectedItem = ragdoll.inventory.selected < ragdoll.inventory.hotbar.size()
+			? ragdoll.inventory.hotbar[ragdoll.inventory.selected].item : ItemNone;
+		const bool holdingGun = IsGun(selectedItem);
+		const GunPoseDefinition& gunPose = ItemDefinitionFor(selectedItem).gunPose;
+		const olc::vf2d aimDirection = ragdoll.input.aim.mag2() > 0.0001f
+			? ragdoll.input.aim.norm() : olc::vf2d{ facing, 0.0f };
+		const float aimAngle = std::atan2(aimDirection.y, aimDirection.x);
 
 		const olc::vf2d hip = targets[Hips];
 		for (int leg = 0; leg < 2; ++leg) {
@@ -181,7 +304,10 @@ namespace Trauma {
 			const float phase = arm == 0 ? -swing : swing;
 			olc::vf2d offset;
 			if (reaching)
-				offset = ragdoll.input.aim;
+				offset = arm == 1 && holdingGun
+					? Rotate(gunPose.aimingHand, aimAngle) : ragdoll.input.aim;
+			else if (arm == 1 && holdingGun)
+				offset = olc::vf2d{ gunPose.lowReadyHand.x * facing, gunPose.lowReadyHand.y };
 			else if (movement == MovementState::Crawling)
 				offset = olc::vf2d{ (12.0f + phase * 5.0f) * facing, 10.0f - std::max(0.0f, phase) * 2.0f };
 			else
@@ -456,7 +582,8 @@ namespace Trauma {
 		HandGrip& grip = ragdoll.grips[arm];
 		ObjectState& hand = ragdoll.parts[arm == 0 ? LeftHand : RightHand];
 		hand.angle = HandFacingAngle(ragdoll, arm);
-		if (!(arm == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight) || !ragdoll.input.grab) {
+		if (HandControlIncludes(SelectedHandControl(ragdoll.inventory), arm)
+			|| !(arm == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight) || !ragdoll.input.grab) {
 			grip = {};
 			return;
 		}

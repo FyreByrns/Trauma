@@ -74,6 +74,7 @@ namespace Trauma {
 		const RagdollState& GetLocalRagdoll() const;
 		std::array<olc::vf2d, PartCount> GetLocalPose(float alpha) const;
 		bool GetRemotePose(uint8_t id, float alpha, std::array<olc::vf2d, PartCount>& pose, float& facing) const;
+		const RagdollState* GetRemoteRagdoll(uint8_t id) const;
 		const std::vector<ObjectView>& GetObjects() const;
 		const std::array<WorldItem, MaxWorldItems>& GetWorldItems() const;
 		const std::array<ShelfView, MaxShelves>& GetShelves() const;
@@ -82,7 +83,7 @@ namespace Trauma {
 		bool IsShelfDrop(const olc::vf2d& position) const;
 		void PlaceShelf(const olc::vf2d& position);
 		void MoveShelf(uint8_t index, const olc::vf2d& position);
-		void FireGun(size_t hotbar, const olc::vf2d& target);
+		void FireGun(size_t hotbar);
 		void MoveItem(const SlotAddress& from, const SlotAddress& to);
 		void DropItem(const SlotAddress& from, const olc::vf2d& position);
 		bool GetPickupCandidate(PickupTarget& target) const;
@@ -122,11 +123,22 @@ namespace Trauma {
 			std::vector<uint8_t> image;
 		};
 
+		struct PendingReliable {
+			uint32_t id = 0;
+			std::vector<std::vector<uint8_t>> datagrams;
+			std::chrono::steady_clock::time_point nextRetry;
+			uint8_t attempts = 0;
+		};
+
 		void ResetSession();
 		void SendHello();
-		void SendPacket(const Net::PacketWriter& packet) const;
+		void SendPacket(const Net::PacketWriter& packet);
+		void SendFragmentAck(uint32_t id) const;
+		void RetryReliableMessages();
 		void PollPackets();
 		void HandlePacket(Net::PacketReader& reader);
+		void HandleFragmentAck(Net::PacketReader& reader);
+		void HandleMessage(Net::MessageType type, Net::PacketReader& reader);
 		void HandleWelcome(Net::PacketReader& reader);
 		void HandleSnapshot(Net::PacketReader& reader);
 		void ApplySnapshot(uint32_t serverTick, uint8_t count);
@@ -147,6 +159,7 @@ namespace Trauma {
 		std::vector<PredictedRagdoll> predictedRagdolls;
 		std::vector<PredictedBody> predictedBodies;
 		std::array<SnapshotChunk, MaxPlayers + 1> snapshotChunks{};
+		Net::MessageAssembler fragments;
 		uint32_t assemblingTick = 0;
 		uint8_t assemblingCount = 0;
 		std::vector<ObjectView> players;
@@ -155,7 +168,9 @@ namespace Trauma {
 		std::vector<ShotTracer> shotTracers;
 		std::deque<SentInput> pending;
 		std::deque<PhysicsSnapshot> snapshots;
+		std::vector<PendingReliable> reliable;
 		uint32_t nextInputSequence = 1;
+		uint32_t nextMessageId = 1;
 		float connectingTime = 0.0f;
 		float helloCooldown = 0.0f;
 		float snapshotTimer = 0.0f;

@@ -29,6 +29,13 @@ namespace Trauma {
 			InputState input;
 		};
 
+		struct PendingReliable {
+			uint32_t id = 0;
+			std::vector<std::vector<uint8_t>> datagrams;
+			std::chrono::steady_clock::time_point nextRetry;
+			uint8_t attempts = 0;
+		};
+
 		struct ClientSlot {
 			bool bActive = false;
 			Net::Endpoint endpoint;
@@ -40,6 +47,8 @@ namespace Trauma {
 			uint32_t highestReceived = 0;
 			uint32_t nextShotTick = 0;
 			std::chrono::steady_clock::time_point lastSeen;
+			Net::MessageAssembler fragments;
+			std::vector<PendingReliable> reliable;
 		};
 
 		struct Shelf {
@@ -57,9 +66,15 @@ namespace Trauma {
 		InputState SelectInput(ClientSlot& client);
 		void BroadcastSnapshot();
 		void SendSnapshotTo(const std::vector<ClientSlot*>& recipients, const Net::PacketWriter& packet);
+		void RetryReliableMessages();
+		void SendDatagrams(const Net::Endpoint& endpoint, const std::vector<std::vector<uint8_t>>& datagrams);
+		void SendFragmentAck(const Net::Endpoint& endpoint, uint32_t id);
 		void DropTimedOutClients();
 		ClientSlot* FindClient(const Net::Endpoint& endpoint);
 		ClientSlot* AllocateClient(const Net::Endpoint& endpoint);
+		void HandleMessage(const Net::Endpoint& endpoint, Net::MessageType type, Net::PacketReader& reader);
+		void HandleFragment(const Net::Endpoint& endpoint, Net::PacketReader& reader);
+		void HandleFragmentAck(const Net::Endpoint& endpoint, Net::PacketReader& reader);
 		void HandleHello(const Net::Endpoint& endpoint, Net::PacketReader& reader);
 		void HandleInput(const Net::Endpoint& endpoint, Net::PacketReader& reader);
 		void HandleInventory(const Net::Endpoint& endpoint, Net::PacketReader& reader);
@@ -73,7 +88,7 @@ namespace Trauma {
 		void ClearShelves();
 		void StepShelves();
 		void CreateShelf(Shelf& shelf, const olc::vf2d& position);
-		void SendWelcome(const ClientSlot& client);
+		void SendWelcome(ClientSlot& client);
 
 	private:
 		Net::Socket socket;
@@ -86,5 +101,6 @@ namespace Trauma {
 		std::thread worker;
 		std::atomic<bool> running = false;
 		uint32_t tick = 0;
+		uint32_t nextMessageId = 1;
 	};
 }

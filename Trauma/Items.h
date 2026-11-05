@@ -18,6 +18,7 @@ namespace Trauma {
 	constexpr size_t HotbarSlots = 10;
 	constexpr size_t ClothingSlots = 3;
 	constexpr size_t MaxWorldItems = 16;
+	constexpr size_t MaxGunBarrels = 4;
 	constexpr uint8_t MagazineCapacity = 8;
 	constexpr uint32_t GunCooldownTicks = 8;
 	constexpr float GunRange = 900.0f;
@@ -125,6 +126,12 @@ namespace Trauma {
 		Circle
 	};
 
+	enum class HandControl : uint8_t {
+		None,
+		Left,
+		Right
+	};
+
 	struct ItemBodyDefinition {
 		ItemBodyShape shape = ItemBodyShape::None;
 		olc::vf2d halfExtents = { 0.0f, 0.0f };
@@ -132,11 +139,33 @@ namespace Trauma {
 		float density = 0.5f;
 	};
 
+	struct GunBarrelDefinition {
+		olc::vf2d position = { 0.0f, 0.0f };
+		float angle = 0.0f;
+	};
+
+	struct GunRecoilDefinition {
+		float amount = 0.0f;
+		olc::vf2d direction = { 0.0f, -1.0f };
+		float lowReadyRecovery = 4.0f;
+		float aimingRecovery = 18.0f;
+	};
+
+	struct GunPoseDefinition {
+		olc::vf2d lowReadyHand = { 10.0f, 16.0f };
+		olc::vf2d aimingHand = { 20.0f, 0.0f };
+		std::array<GunBarrelDefinition, MaxGunBarrels> barrels{};
+		uint8_t barrelCount = 0;
+		GunRecoilDefinition recoil;
+	};
+
 	struct ItemDefinition {
 		std::string name;
 		ItemTags tags = 0;
 		olc::Pixel colour = olc::Pixel(60, 70, 80);
 		ItemBodyDefinition body;
+		GunPoseDefinition gunPose;
+		HandControl hand = HandControl::None;
 		uint8_t maxStack = 1;
 		uint8_t maxCharge = 0;
 		uint8_t defaultCharge = 0;
@@ -217,6 +246,7 @@ namespace Trauma {
 	uint8_t ItemMaxStack(ItemId item);
 	uint8_t ItemMaxCharge(ItemId item);
 	uint8_t ItemDefaultCharge(ItemId item);
+	HandControl ItemHandControl(ItemId item);
 
 	// Searches the hotbar, clothing, and every nested item container.
 	bool FindInventoryItem(const Inventory& inventory,
@@ -225,6 +255,17 @@ namespace Trauma {
 
 	inline bool IsItem(ItemId item) {
 		return item != ItemNone;
+	}
+
+	inline HandControl SelectedHandControl(const Inventory& inventory) {
+		if (inventory.selected >= inventory.hotbar.size())
+			return HandControl::None;
+		return ItemHandControl(inventory.hotbar[inventory.selected].item);
+	}
+
+	inline bool HandControlIncludes(HandControl control, size_t arm) {
+		return (arm == 0 && control == HandControl::Left)
+			|| (arm == 1 && control == HandControl::Right);
 	}
 
 	inline bool IsGun(ItemId item) {

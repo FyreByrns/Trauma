@@ -11,18 +11,21 @@
     {
       "name": "wrench",
       "tags": ["tool"],
+      "hand": "right",
       "colour": [150, 160, 170],
       "body": { "shape": "box", "halfExtents": [9.0, 2.5], "density": 0.6 }
     },
     {
       "name": "flashlight",
       "tags": ["tool"],
+      "hand": "right",
       "colour": [235, 205, 110],
       "body": { "shape": "box", "halfExtents": [7.0, 3.0], "density": 0.6 }
     },
     {
       "name": "medkit",
       "tags": ["consumable"],
+      "hand": "right",
       "colour": [215, 90, 90],
       "body": { "shape": "box", "halfExtents": [7.0, 6.0], "density": 0.5 },
       "maxStack": 3
@@ -30,6 +33,7 @@
     {
       "name": "oxygen tank",
       "tags": ["tool"],
+      "hand": "right",
       "colour": [110, 190, 200],
       "body": { "shape": "circle", "radius": 6.0, "density": 0.5 }
     },
@@ -54,6 +58,7 @@
     {
       "name": "shelf",
       "tags": ["shelf", "tool"],
+      "hand": "right",
       "colour": [150, 110, 65],
       "body": { "shape": "box", "halfExtents": [10.0, 4.0], "density": 0.6 },
       "maxStack": 4
@@ -61,8 +66,22 @@
     {
       "name": "gun",
       "tags": ["gun", "tool"],
+      "hand": "right",
       "colour": [95, 100, 110],
       "body": { "shape": "box", "halfExtents": [7.0, 3.0], "density": 0.8 },
+      "gunPose": {
+        "lowReadyHand": [10.0, 16.0],
+        "aimingHand": [20.0, 0.0],
+        "barrels": [
+          { "position": [7.0, 0.0], "angleDegrees": 0.0 }
+        ],
+        "recoil": {
+          "amountDegrees": 6.0,
+          "direction": [0.0, -1.0],
+          "lowReadyRecovery": 4.0,
+          "aimingRecovery": 18.0
+        }
+      },
       "container": {
         "title": "Gun",
         "width": 1,
@@ -77,6 +96,7 @@
     {
       "name": "magazine",
       "tags": ["magazine", "ammo"],
+      "hand": "right",
       "colour": [180, 150, 70],
       "body": { "shape": "box", "halfExtents": [3.0, 5.0], "density": 0.4 },
       "maxCharge": 8,

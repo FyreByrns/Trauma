@@ -212,7 +212,7 @@ namespace Trauma {
 			|| drag.active || Ui::WantsMouse() || keyboard.GetKey(olc::Key::Q).bPressed
 			|| !mouse.GetButton(0).bPressed)
 			return;
-		client.FireGun(hotbarSelection, camera.GetWorldTransform().inverse(mouse.GetPosition()));
+		client.FireGun(hotbarSelection);
 	}
 
 	void Game::ReloadGun() {
@@ -399,11 +399,8 @@ namespace Trauma {
 			input.grab = false;
 		}
 
-		if (IsGun(client.GetLocalRagdoll().inventory.hotbar[hotbarSelection].item)) {
+		if (IsGun(client.GetLocalRagdoll().inventory.hotbar[hotbarSelection].item))
 			input.reachLeft = false;
-			input.reachRight = true;
-			input.grab = false;
-		}
 
 		if (keyboard.GetKey(olc::Key::A).bHeld || keyboard.GetKey(olc::Key::LEFT).bHeld)
 			input.moveX -= 1.0f;
@@ -513,7 +510,7 @@ namespace Trauma {
 				std::array<olc::vf2d, PartCount> pose;
 				float facing = 1.0f;
 				if (client.GetRemotePose(object.id, alpha, pose, facing))
-					DrawRagdoll(pose, facing, olc::Colour::CYAN);
+					DrawRagdoll(pose, facing, olc::Colour::CYAN, client.GetRemoteRagdoll(object.id));
 			}
 			else {
 				olc::vf2d position = object.position;
@@ -526,7 +523,8 @@ namespace Trauma {
 		if (client.GetStatus() != Client::Status::Connected)
 			return;
 
-		DrawRagdoll(client.GetLocalPose(alpha), client.GetLocalRagdoll().facing, olc::Colour::CYAN);
+		DrawRagdoll(client.GetLocalPose(alpha), client.GetLocalRagdoll().facing, olc::Colour::CYAN,
+			&client.GetLocalRagdoll());
 	}
 
 	void Game::DrawShotTracers() {
@@ -554,7 +552,8 @@ namespace Trauma {
 			draw.Line(vertices[i], vertices[(i + 1) % object.vertexCount], olc::Pixel(150, 100, 45));
 	}
 
-	void Game::DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour) {
+	void Game::DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour,
+		const RagdollState* ragdoll) {
 		const olc::Pixel farColour(45, 125, 135);
 		const auto drawLimb = [&](RagdollPart root, RagdollPart joint, RagdollPart end, olc::Pixel limbColour) {
 			draw.Line(pose[root], pose[joint], limbColour);
@@ -562,6 +561,38 @@ namespace Trauma {
 			draw.FilledCircle(pose[joint], 4.0f, limbColour);
 			draw.FilledCircle(pose[end], 4.0f, limbColour);
 		};
+		const auto darken = [](olc::Pixel pixel) {
+			return olc::Pixel(static_cast<uint8_t>(pixel.r / 2),
+				static_cast<uint8_t>(pixel.g / 2), static_cast<uint8_t>(pixel.b / 2));
+		};
+		const auto drawPlate = [&](const olc::vf2d& center, const olc::vf2d& half, olc::Pixel fill) {
+			const olc::vf2d topLeft = center - half;
+			const olc::vf2d bottomRight = center + half;
+			draw.FilledRect(topLeft, half * 2.0f, fill);
+			const olc::Pixel edge = darken(fill);
+			draw.Line(topLeft, olc::vf2d{ bottomRight.x, topLeft.y }, edge);
+			draw.Line(olc::vf2d{ bottomRight.x, topLeft.y }, bottomRight, edge);
+			draw.Line(bottomRight, olc::vf2d{ topLeft.x, bottomRight.y }, edge);
+			draw.Line(olc::vf2d{ topLeft.x, bottomRight.y }, topLeft, edge);
+		};
+		const auto equippedHalf = [](ItemId item, float scale) {
+			const ItemBodyDefinition& body = ItemDefinitionFor(item).body;
+			if (body.shape == ItemBodyShape::Box)
+				return body.halfExtents * scale;
+			if (body.shape == ItemBodyShape::Circle)
+				return olc::vf2d{ body.radius, body.radius } * scale;
+			return olc::vf2d{ 4.0f, 4.0f } * scale;
+		};
+
+		if (ragdoll && ragdoll->inventory.back.item != ItemNone) {
+			const ItemId item = ragdoll->inventory.back.item;
+			const olc::Pixel fill = ItemColour(item);
+			const olc::vf2d half = equippedHalf(item, 0.8f);
+			drawPlate(pose[Torso] + olc::vf2d{ -facing * 4.5f, 0.0f }, half, fill);
+			const olc::Pixel edge = darken(fill);
+			draw.Line(pose[Torso] + olc::vf2d{ -facing * 2.0f, -5.0f },
+				pose[Torso] + olc::vf2d{ facing * 5.0f, 3.0f }, edge);
+		}
 
 		drawLimb(Torso, LeftElbow, LeftHand, farColour);
 		drawLimb(Hips, LeftKnee, LeftFoot, farColour);
@@ -570,9 +601,59 @@ namespace Trauma {
 		draw.FilledCircle(pose[Head], 7.0f, colour);
 		draw.FilledCircle(pose[Torso], 6.0f, colour);
 		draw.FilledCircle(pose[Hips], 6.0f, colour);
+
+		if (ragdoll && ragdoll->inventory.clothing[1].item != ItemNone) {
+			const olc::Pixel fill = ItemColour(ragdoll->inventory.clothing[1].item);
+			draw.Line(pose[Torso], pose[Hips], fill);
+			draw.FilledCircle(pose[Torso], 7.5f, fill);
+			draw.FilledCircle(pose[Hips], 7.0f, fill);
+		}
+
 		drawLimb(Hips, RightKnee, RightFoot, colour);
 		drawLimb(Torso, RightElbow, RightHand, colour);
+
+		if (ragdoll && ragdoll->inventory.clothing[2].item != ItemNone) {
+			const olc::Pixel fill = ItemColour(ragdoll->inventory.clothing[2].item);
+			const auto drawBoot = [&](RagdollPart knee, RagdollPart foot) {
+				draw.Line(pose[knee], pose[foot], fill);
+				draw.FilledCircle(pose[foot], 4.5f, fill);
+				draw.Line(pose[foot], pose[foot] + olc::vf2d{ facing * 5.0f, 0.0f }, fill);
+			};
+			drawBoot(LeftKnee, LeftFoot);
+			drawBoot(RightKnee, RightFoot);
+		}
+
+		if (ragdoll && ragdoll->inventory.belt.item != ItemNone) {
+			const ItemId item = ragdoll->inventory.belt.item;
+			const olc::vf2d half = equippedHalf(item, 0.8f);
+			drawPlate(pose[Hips] + olc::vf2d{ 0.0f, 1.0f }, half, ItemColour(item));
+		}
+
+		if (ragdoll && ragdoll->inventory.clothing[0].item != ItemNone) {
+			const olc::Pixel fill = ItemColour(ragdoll->inventory.clothing[0].item);
+			draw.FilledCircle(pose[Head], 8.0f, fill);
+			draw.Line(pose[Head] + olc::vf2d{ -facing * 6.0f, 1.0f },
+				pose[Head] + olc::vf2d{ facing * 6.0f, 1.0f }, darken(fill));
+		}
+
 		draw.FilledCircle(pose[Head] + olc::vf2d{ facing * 4.0f, -1.0f }, 1.5f, olc::Pixel(5, 10, 17));
+
+		if (ragdoll && ragdoll->inventory.selected < ragdoll->inventory.hotbar.size()) {
+			const ItemStack& held = ragdoll->inventory.hotbar[ragdoll->inventory.selected];
+			const bool leftHand = SelectedHandControl(ragdoll->inventory) == HandControl::Left;
+			const RagdollPart hand = leftHand ? LeftHand : RightHand;
+			if (held.item != ItemNone && ragdoll->grips[leftHand ? 0 : 1].target == 0) {
+				const olc::vf2d unit = HeldItemDirection(pose, ragdoll->input, facing, leftHand,
+					held.item, ragdoll->gunRecoil);
+				ObjectState body = CreateItemBody(held.item,
+					pose[hand] + unit * HeldItemCenterOffset(held.item));
+				body.angle = std::atan2(unit.y, unit.x);
+				const bool visible = body.shape == Shape::Polygon
+					? body.vertexCount >= 3 : body.radius > 0.0f;
+				if (visible)
+					DrawItem(held.item, body);
+			}
+		}
 	}
 
 	void Game::DrawItem(ItemId item, const ObjectState& body) {

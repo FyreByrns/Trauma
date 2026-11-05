@@ -1,17 +1,28 @@
 #pragma once
 #include "Simulation.h"
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Trauma::Net {
-	constexpr uint32_t ProtocolVersion = 24;
+	constexpr uint32_t ProtocolVersion = 27;
 	constexpr uint16_t DefaultPort = 42000;
 	constexpr int SnapshotIntervalTicks = 3;
 	constexpr float ConnectionTimeoutSeconds = 5.0f;
 	constexpr uint8_t InputRedundancy = 4;
 	constexpr uint8_t MaxInputEntries = 8;
+	constexpr size_t MaxDatagramSize = 1200;
+	constexpr size_t MaxMessageSize = 64 * 1024;
+	constexpr size_t FragmentHeaderSize = 1 + 4 + 2 + 2 + 4 + 1;
+	constexpr size_t MaxFragmentPayload = MaxDatagramSize - FragmentHeaderSize;
+	constexpr size_t MaxPendingAssemblies = 8;
+	constexpr size_t MaxCompletedReliable = 32;
+	constexpr int ReliableRetryMilliseconds = 300;
+	constexpr uint8_t MaxReliableAttempts = 8;
 
 	enum class MessageType : uint8_t {
 		None = 0,
@@ -21,7 +32,9 @@ namespace Trauma::Net {
 		Snapshot = 4,
 		Inventory = 5,
 		Shelf = 6,
-		Shoot = 7
+		Shoot = 7,
+		Fragment = 8,
+		FragmentAck = 9
 	};
 
 	enum class InventoryAction : uint8_t {
@@ -48,6 +61,11 @@ namespace Trauma::Net {
 			static_assert(std::is_trivially_copyable_v<T>);
 			const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
 			data.insert(data.end(), bytes, bytes + sizeof(T));
+		}
+
+		void WriteBytes(const void* bytes, size_t count) {
+			const auto* first = static_cast<const uint8_t*>(bytes);
+			data.insert(data.end(), first, first + count);
 		}
 
 		const std::vector<uint8_t>& Data() const {
@@ -83,10 +101,190 @@ namespace Trauma::Net {
 			return true;
 		}
 
+		bool ReadBytes(void* destination, size_t count) {
+			if (offset + count > size)
+				return false;
+
+			std::memcpy(destination, data + offset, count);
+			offset += count;
+			return true;
+		}
+
+		size_t Remaining() const {
+			return size - offset;
+		}
+
 	private:
 		const uint8_t* data = nullptr;
 		size_t size = 0;
 		size_t offset = 0;
+	};
+
+	inline uint32_t AllocateMessageId(uint32_t& next) {
+		const uint32_t id = next++;
+		if (next == 0)
+			next = 1;
+		return id;
+	}
+
+	inline std::vector<std::vector<uint8_t>> FragmentMessage(const std::vector<uint8_t>& message,
+		uint32_t id, bool reliable) {
+		std::vector<std::vector<uint8_t>> fragments;
+		if (message.empty() || message.size() > MaxMessageSize)
+			return fragments;
+		if (message.size() <= MaxDatagramSize) {
+			fragments.push_back(message);
+			return fragments;
+		}
+
+		const size_t count = (message.size() + MaxFragmentPayload - 1) / MaxFragmentPayload;
+		if (count == 0 || count > 65535)
+			return fragments;
+
+		fragments.reserve(count);
+		for (size_t index = 0; index < count; ++index) {
+			const size_t offset = index * MaxFragmentPayload;
+			const size_t payloadSize = message.size() - offset < MaxFragmentPayload
+				? message.size() - offset : MaxFragmentPayload;
+			PacketWriter packet(MessageType::Fragment);
+			packet.Write(id);
+			packet.Write(static_cast<uint16_t>(index));
+			packet.Write(static_cast<uint16_t>(count));
+			packet.Write(static_cast<uint32_t>(message.size()));
+			packet.Write(static_cast<uint8_t>(reliable ? 1 : 0));
+			packet.WriteBytes(message.data() + offset, payloadSize);
+			fragments.push_back(packet.Data());
+		}
+		return fragments;
+	}
+
+	struct ReassembledMessage {
+		uint32_t id = 0;
+		bool reliable = false;
+		std::vector<uint8_t> data;
+	};
+
+	class MessageAssembler {
+	public:
+		bool Add(PacketReader& reader, ReassembledMessage& message) {
+			uint32_t id = 0;
+			uint16_t index = 0;
+			uint16_t count = 0;
+			uint32_t totalSize = 0;
+			uint8_t flags = 0;
+			if (!reader.Read(id) || !reader.Read(index) || !reader.Read(count)
+				|| !reader.Read(totalSize) || !reader.Read(flags))
+				return false;
+			if (count == 0 || index >= count || totalSize == 0 || totalSize > MaxMessageSize
+				|| (flags & ~1u) != 0)
+				return false;
+
+			const size_t expectedCount = (totalSize + MaxFragmentPayload - 1) / MaxFragmentPayload;
+			if (expectedCount != count)
+				return false;
+
+			const size_t offset = static_cast<size_t>(index) * MaxFragmentPayload;
+			const size_t expectedSize = totalSize - offset < MaxFragmentPayload
+				? totalSize - offset : MaxFragmentPayload;
+			if (offset >= totalSize || reader.Remaining() != expectedSize)
+				return false;
+
+			const bool reliable = (flags & 1) != 0;
+			if (reliable) {
+				for (const uint32_t completedId : completed) {
+					if (completedId != id)
+						continue;
+					message.id = id;
+					message.reliable = true;
+					message.data.clear();
+					return true;
+				}
+			}
+
+			const auto now = std::chrono::steady_clock::now();
+			Expire(now);
+			auto entry = entries.find(id);
+			if (entry == entries.end()) {
+				if (entries.size() >= MaxPendingAssemblies) {
+					auto oldest = entries.begin();
+					for (auto candidate = entries.begin(); candidate != entries.end(); ++candidate)
+						if (candidate->second.updated < oldest->second.updated)
+							oldest = candidate;
+					entries.erase(oldest);
+				}
+
+				Entry fresh;
+				fresh.count = count;
+				fresh.totalSize = totalSize;
+				fresh.reliable = reliable;
+				fresh.data.resize(totalSize);
+				fresh.received.assign(count, 0);
+				fresh.updated = now;
+				entry = entries.emplace(id, std::move(fresh)).first;
+			}
+
+			Entry& state = entry->second;
+			if (state.count != count || state.totalSize != totalSize
+				|| state.reliable != reliable) {
+				entries.erase(entry);
+				return false;
+			}
+			if (state.received[index])
+				return false;
+			if (!reader.ReadBytes(state.data.data() + offset, expectedSize)) {
+				entries.erase(entry);
+				return false;
+			}
+
+			state.received[index] = 1;
+			++state.receivedCount;
+			state.updated = now;
+			if (state.receivedCount != state.count)
+				return false;
+
+			if (state.reliable) {
+				completed.push_back(id);
+				if (completed.size() > MaxCompletedReliable)
+					completed.erase(completed.begin());
+			}
+
+			message.id = id;
+			message.reliable = state.reliable;
+			message.data = std::move(state.data);
+			entries.erase(entry);
+			return !message.data.empty()
+				&& message.data[0] != static_cast<uint8_t>(MessageType::Fragment)
+				&& message.data[0] != static_cast<uint8_t>(MessageType::FragmentAck);
+		}
+
+		void Clear() {
+			entries.clear();
+			completed.clear();
+		}
+
+	private:
+		struct Entry {
+			uint16_t count = 0;
+			uint32_t totalSize = 0;
+			bool reliable = false;
+			std::vector<uint8_t> data;
+			std::vector<uint8_t> received;
+			uint16_t receivedCount = 0;
+			std::chrono::steady_clock::time_point updated;
+		};
+
+		void Expire(std::chrono::steady_clock::time_point now) {
+			const auto timeout = std::chrono::duration<double>(5.0);
+			for (auto entry = entries.begin(); entry != entries.end();) {
+				if (now - entry->second.updated > timeout)
+					entry = entries.erase(entry);
+				else
+					++entry;
+			}
+		}
+
+		std::unordered_map<uint32_t, Entry> entries;
+		std::vector<uint32_t> completed;
 	};
 
 	inline void WriteObjectState(PacketWriter& packet, uint8_t id, const ObjectState& player) {
@@ -352,10 +550,8 @@ namespace Trauma::Net {
 		packet.Write(position.y);
 	}
 
-	inline void WriteShoot(PacketWriter& packet, uint8_t hotbar, const olc::vf2d& target) {
+	inline void WriteShoot(PacketWriter& packet, uint8_t hotbar) {
 		packet.Write(hotbar);
-		packet.Write(target.x);
-		packet.Write(target.y);
 	}
 
 	inline void WriteWorldItems(PacketWriter& packet, const std::array<ItemStack, MaxWorldItems>& stacks,
@@ -394,6 +590,7 @@ namespace Trauma::Net {
 		packet.Write(ragdoll.crouchTurn);
 		packet.Write(ragdoll.ladder);
 		packet.Write(ragdoll.ladderDetachTime);
+		packet.Write(ragdoll.gunRecoil);
 		WriteInput(packet, ragdoll.input);
 		for (const HandGrip& grip : ragdoll.grips) {
 			packet.Write(grip.target);
@@ -424,7 +621,9 @@ namespace Trauma::Net {
 			|| !reader.Read(ragdoll.crouchTurn) || !std::isfinite(ragdoll.crouchTurn)
 			|| ragdoll.crouchTurn < 0.0f
 			|| !reader.Read(ragdoll.ladder) || ragdoll.ladder > TestLadders().size()
-			|| !reader.Read(ragdoll.ladderDetachTime) || !ReadInput(reader, ragdoll.input))
+			|| !reader.Read(ragdoll.ladderDetachTime)
+			|| !reader.Read(ragdoll.gunRecoil) || !std::isfinite(ragdoll.gunRecoil)
+			|| !ReadInput(reader, ragdoll.input))
 			return false;
 		for (HandGrip& grip : ragdoll.grips)
 			if (!reader.Read(grip.target) || !reader.Read(grip.anchor.x) || !reader.Read(grip.anchor.y)

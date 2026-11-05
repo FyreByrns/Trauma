@@ -10,6 +10,8 @@
 
 namespace Trauma {
 	namespace {
+		constexpr float DegreesToRadians = 0.01745329251994329577f;
+
 		struct NamedTag {
 			const char* name;
 			ItemTag tag;
@@ -107,6 +109,97 @@ namespace Trauma {
 				if (parsed == 0)
 					return Fail(error, "unknown item tag '" + name + "'");
 				result |= parsed;
+			}
+			return true;
+		}
+
+		bool ParseHand(const JsonValue* value, HandControl& hand, std::string& error) {
+			if (!value)
+				return true;
+			if (!value->IsString())
+				return Fail(error, "hand must be 'none', 'left', or 'right'");
+			const std::string name = value->GetString();
+			if (name == "none")
+				hand = HandControl::None;
+			else if (name == "left")
+				hand = HandControl::Left;
+			else if (name == "right")
+				hand = HandControl::Right;
+			else
+				return Fail(error, "hand must be 'none', 'left', or 'right'");
+			return true;
+		}
+
+		bool ParsePoint(const JsonValue* value, olc::vf2d& point, const char* name, std::string& error) {
+			if (!value || !value->IsArray() || value->Items().size() != 2)
+				return Fail(error, std::string(name) + " must be [x, y]");
+			if (!ReadFloat(&value->Items()[0], point.x) || !ReadFloat(&value->Items()[1], point.y))
+				return Fail(error, std::string("invalid ") + name);
+			return true;
+		}
+
+		bool ParseGunPose(const JsonValue* value, GunPoseDefinition& pose, std::string& error) {
+			if (!value)
+				return true;
+			if (!value->IsObject())
+				return Fail(error, "gunPose must be an object");
+			if (const JsonValue* lowReady = value->Find("lowReadyHand"); lowReady) {
+				if (!ParsePoint(lowReady, pose.lowReadyHand, "gunPose.lowReadyHand", error))
+					return false;
+			}
+			if (const JsonValue* aiming = value->Find("aimingHand"); aiming) {
+				if (!ParsePoint(aiming, pose.aimingHand, "gunPose.aimingHand", error))
+					return false;
+			}
+			if (const JsonValue* barrels = value->Find("barrels"); barrels) {
+				if (!barrels->IsArray() || barrels->Items().empty()
+					|| barrels->Items().size() > MaxGunBarrels)
+					return Fail(error, "gunPose.barrels must contain 1 to "
+						+ std::to_string(MaxGunBarrels) + " barrels");
+				pose.barrelCount = static_cast<uint8_t>(barrels->Items().size());
+				for (size_t index = 0; index < barrels->Items().size(); ++index) {
+					const JsonValue& barrel = barrels->Items()[index];
+					if (!barrel.IsObject())
+						return Fail(error, "gunPose.barrels entries must be objects");
+					const JsonValue* position = barrel.Find("position");
+					if (!position || !ParsePoint(position, pose.barrels[index].position,
+						"gunPose.barrels.position", error))
+						return false;
+					if (const JsonValue* angle = barrel.Find("angleDegrees"); angle) {
+						float degrees = 0.0f;
+						if (!ReadFloat(angle, degrees))
+							return Fail(error, "invalid gunPose.barrels.angleDegrees");
+						pose.barrels[index].angle = degrees * DegreesToRadians;
+					}
+				}
+			}
+			if (const JsonValue* recoil = value->Find("recoil"); recoil) {
+				if (!recoil->IsObject())
+					return Fail(error, "gunPose.recoil must be an object");
+				if (const JsonValue* amount = recoil->Find("amountDegrees"); amount) {
+					float degrees = 0.0f;
+					if (!ReadFloat(amount, degrees) || degrees < 0.0f)
+						return Fail(error, "gunPose.recoil.amountDegrees must be non-negative");
+					pose.recoil.amount = degrees * DegreesToRadians;
+				}
+				if (const JsonValue* direction = recoil->Find("direction"); direction) {
+					if (!ParsePoint(direction, pose.recoil.direction,
+						"gunPose.recoil.direction", error))
+						return false;
+					if (pose.recoil.direction.mag2() < 0.0001f)
+						return Fail(error, "gunPose.recoil.direction must not be zero");
+					pose.recoil.direction = pose.recoil.direction.norm();
+				}
+				if (const JsonValue* recovery = recoil->Find("lowReadyRecovery"); recovery) {
+					if (!ReadFloat(recovery, pose.recoil.lowReadyRecovery)
+						|| pose.recoil.lowReadyRecovery < 0.0f)
+						return Fail(error, "gunPose.recoil.lowReadyRecovery must be non-negative");
+				}
+				if (const JsonValue* recovery = recoil->Find("aimingRecovery"); recovery) {
+					if (!ReadFloat(recovery, pose.recoil.aimingRecovery)
+						|| pose.recoil.aimingRecovery < 0.0f)
+						return Fail(error, "gunPose.recoil.aimingRecovery must be non-negative");
+				}
 			}
 			return true;
 		}
@@ -231,11 +324,15 @@ namespace Trauma {
 			item.name = name->GetString();
 			if (!ParseTags(value.Find("tags"), item.tags, error))
 				return false;
+			if (!ParseHand(value.Find("hand"), item.hand, error))
+				return false;
 			if (const JsonValue* colour = value.Find("colour"); colour) {
 				if (!ParseColour(colour, item.colour))
 					return Fail(error, "item '" + item.name + "' has an invalid colour");
 			}
 			if (!ParseBody(value.Find("body"), item.body, error))
+				return false;
+			if (!ParseGunPose(value.Find("gunPose"), item.gunPose, error))
 				return false;
 			if (const JsonValue* maxStack = value.Find("maxStack"); maxStack) {
 				if (!ReadUInt8(maxStack, item.maxStack) || item.maxStack == 0)
@@ -385,6 +482,10 @@ namespace Trauma {
 
 	olc::Pixel ItemColour(ItemId item) {
 		return ItemDefinitionFor(item).colour;
+	}
+
+	HandControl ItemHandControl(ItemId item) {
+		return ItemDefinitionFor(item).hand;
 	}
 
 	ItemTags ItemTagsFor(ItemId item) {

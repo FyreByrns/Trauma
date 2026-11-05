@@ -79,7 +79,8 @@ namespace Trauma {
 		void DrawShotTracers();
 		void DrawObject(const Client::ObjectView& object, const olc::vf2d& position,
 			float angle, olc::Pixel colour);
-		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour);
+		void DrawRagdoll(const std::array<olc::vf2d, PartCount>& pose, float facing, olc::Pixel colour,
+			const RagdollState* ragdoll);
 		void DrawItem(ItemId item, const ObjectState& body);
 		void DrawShelfBoards(const olc::vf2d& position, olc::Pixel colour);
 		void DrawDropPreview();

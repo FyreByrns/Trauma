@@ -78,6 +78,7 @@ namespace Trauma {
 			int steps = 0;
 			while (accumulator >= FixedDeltaTime && steps < 8 && running) {
 				PollPackets();
+				RetryReliableMessages();
 				StepSimulation();
 				DropTimedOutClients();
 
@@ -93,7 +94,7 @@ namespace Trauma {
 	}
 
 	void Server::PollPackets() {
-		std::array<uint8_t, 2048> buffer{};
+		std::array<uint8_t, Net::MaxDatagramSize> buffer{};
 		while (true) {
 			Net::Endpoint from;
 			const int received = socket.ReceiveFrom(from, buffer.data(), buffer.size());
@@ -101,25 +102,35 @@ namespace Trauma {
 				return;
 
 			Net::PacketReader reader(buffer.data(), static_cast<size_t>(received));
-			switch (reader.GetType()) {
-				case Net::MessageType::Hello:
-					HandleHello(from, reader);
-					break;
-				case Net::MessageType::Input:
-					HandleInput(from, reader);
-					break;
-				case Net::MessageType::Inventory:
-					HandleInventory(from, reader);
-					break;
-				case Net::MessageType::Shelf:
-					HandleShelf(from, reader);
-					break;
-				case Net::MessageType::Shoot:
-					HandleShoot(from, reader);
-					break;
-				default:
-					break;
-			}
+			const Net::MessageType type = reader.GetType();
+			if (type == Net::MessageType::Fragment)
+				HandleFragment(from, reader);
+			else if (type == Net::MessageType::FragmentAck)
+				HandleFragmentAck(from, reader);
+			else
+				HandleMessage(from, type, reader);
+		}
+	}
+
+	void Server::HandleMessage(const Net::Endpoint& endpoint, Net::MessageType type, Net::PacketReader& reader) {
+		switch (type) {
+			case Net::MessageType::Hello:
+				HandleHello(endpoint, reader);
+				break;
+			case Net::MessageType::Input:
+				HandleInput(endpoint, reader);
+				break;
+			case Net::MessageType::Inventory:
+				HandleInventory(endpoint, reader);
+				break;
+			case Net::MessageType::Shelf:
+				HandleShelf(endpoint, reader);
+				break;
+			case Net::MessageType::Shoot:
+				HandleShoot(endpoint, reader);
+				break;
+			default:
+				break;
 		}
 	}
 
@@ -173,8 +184,53 @@ namespace Trauma {
 	}
 
 	void Server::SendSnapshotTo(const std::vector<ClientSlot*>& recipients, const Net::PacketWriter& packet) {
+		if (recipients.empty())
+			return;
+		if (packet.Size() <= Net::MaxDatagramSize) {
+			for (const ClientSlot* recipient : recipients)
+				socket.SendTo(recipient->endpoint, packet.Data().data(), packet.Size());
+			return;
+		}
+
+		const uint32_t id = Net::AllocateMessageId(nextMessageId);
+		const auto datagrams = Net::FragmentMessage(packet.Data(), id, false);
 		for (const ClientSlot* recipient : recipients)
-			socket.SendTo(recipient->endpoint, packet.Data().data(), packet.Size());
+			SendDatagrams(recipient->endpoint, datagrams);
+	}
+
+	void Server::RetryReliableMessages() {
+		const auto now = std::chrono::steady_clock::now();
+		for (ClientSlot& client : clients) {
+			if (!client.bActive)
+				continue;
+
+			for (auto message = client.reliable.begin(); message != client.reliable.end();) {
+				if (now < message->nextRetry) {
+					++message;
+					continue;
+				}
+				if (message->attempts >= Net::MaxReliableAttempts) {
+					message = client.reliable.erase(message);
+					continue;
+				}
+
+				SendDatagrams(client.endpoint, message->datagrams);
+				++message->attempts;
+				message->nextRetry = now + std::chrono::milliseconds(Net::ReliableRetryMilliseconds);
+				++message;
+			}
+		}
+	}
+
+	void Server::SendDatagrams(const Net::Endpoint& endpoint, const std::vector<std::vector<uint8_t>>& datagrams) {
+		for (const auto& datagram : datagrams)
+			socket.SendTo(endpoint, datagram.data(), datagram.size());
+	}
+
+	void Server::SendFragmentAck(const Net::Endpoint& endpoint, uint32_t id) {
+		Net::PacketWriter packet(Net::MessageType::FragmentAck);
+		packet.Write(id);
+		socket.SendTo(endpoint, packet.Data().data(), packet.Size());
 	}
 
 	void Server::BroadcastSnapshot() {
@@ -258,6 +314,42 @@ namespace Trauma {
 
 		std::cout << "[server] rejected client, server is full" << std::endl;
 		return nullptr;
+	}
+
+	void Server::HandleFragment(const Net::Endpoint& endpoint, Net::PacketReader& reader) {
+		ClientSlot* client = FindClient(endpoint);
+		if (!client)
+			return;
+
+		Net::ReassembledMessage message;
+		if (!client->fragments.Add(reader, message))
+			return;
+		if (message.reliable)
+			SendFragmentAck(endpoint, message.id);
+		if (message.data.empty())
+			return;
+
+		Net::PacketReader assembled(message.data.data(), message.data.size());
+		const Net::MessageType type = assembled.GetType();
+		if (type != Net::MessageType::Fragment && type != Net::MessageType::FragmentAck)
+			HandleMessage(endpoint, type, assembled);
+	}
+
+	void Server::HandleFragmentAck(const Net::Endpoint& endpoint, Net::PacketReader& reader) {
+		uint32_t id = 0;
+		if (!reader.Read(id))
+			return;
+
+		ClientSlot* client = FindClient(endpoint);
+		if (!client)
+			return;
+
+		for (auto message = client->reliable.begin(); message != client->reliable.end();) {
+			if (message->id == id)
+				message = client->reliable.erase(message);
+			else
+				++message;
+		}
 	}
 
 	void Server::HandleHello(const Net::Endpoint& endpoint, Net::PacketReader& reader) {
@@ -461,8 +553,7 @@ namespace Trauma {
 			return;
 
 		uint8_t hotbar = 0;
-		olc::vf2d target;
-		if (!reader.Read(hotbar) || !reader.Read(target.x) || !reader.Read(target.y))
+		if (!reader.Read(hotbar))
 			return;
 		client->lastSeen = std::chrono::steady_clock::now();
 
@@ -473,46 +564,50 @@ namespace Trauma {
 			return;
 		if (tick < client->nextShotTick)
 			return;
-		if (!std::isfinite(target.x) || !std::isfinite(target.y))
-			return;
 
-		const olc::vf2d origin = client->player.parts[RightHand].position;
-		const olc::vf2d delta = target - origin;
-		const float distance = delta.mag();
-		if (distance < 0.001f)
+		const GunBarrelRays barrels = ComputeGunBarrelRays(client->player, hotbar);
+		if (barrels.count == 0)
 			return;
-		const olc::vf2d end = origin + delta * (std::min(distance, GunRange) / distance);
-
 		if (!ConsumeGunRound(inventory, hotbar))
 			return;
+		ApplyGunRecoil(client->player, hotbar);
 		client->nextShotTick = tick + GunCooldownTicks;
 
-		float wallFraction = 2.0f;
-		for (const Terrain& terrain : TestTerrain()) {
-			float fraction = 0.0f;
-			if (SegmentRectFraction(origin, end, terrain, fraction))
-				wallFraction = std::min(wallFraction, fraction);
-		}
+		for (size_t barrel = 0; barrel < barrels.count; ++barrel) {
+			const olc::vf2d origin = barrels.rays[barrel].origin;
+			const olc::vf2d end = origin + barrels.rays[barrel].direction * GunRange;
 
-		size_t shelfHit = MaxShelves;
-		float shelfFraction = 2.0f;
-		for (size_t index = 0; index < shelves.size(); ++index) {
-			if (!shelves[index].active)
-				continue;
-			float fraction = 0.0f;
-			if (SegmentRectFraction(origin, end, ShelfBounds(shelves[index].position), fraction)
-				&& fraction < shelfFraction) {
-				shelfFraction = fraction;
-				shelfHit = index;
+			float wallFraction = 2.0f;
+			for (const Terrain& terrain : TestTerrain()) {
+				float fraction = 0.0f;
+				if (SegmentRectFraction(origin, end, terrain, fraction))
+					wallFraction = std::min(wallFraction, fraction);
 			}
-		}
-		if (shelfHit >= shelves.size() || shelfFraction >= wallFraction)
-			return;
 
-		for (const ItemStack& stack : shelves[shelfHit].stacks)
-			if (stack.item != ItemNone)
-				return;
-		DestroyShelf(shelves[shelfHit]);
+			size_t shelfHit = MaxShelves;
+			float shelfFraction = 2.0f;
+			for (size_t index = 0; index < shelves.size(); ++index) {
+				if (!shelves[index].active)
+					continue;
+				float fraction = 0.0f;
+				if (SegmentRectFraction(origin, end, ShelfBounds(shelves[index].position), fraction)
+					&& fraction < shelfFraction) {
+					shelfFraction = fraction;
+					shelfHit = index;
+				}
+			}
+			if (shelfHit >= shelves.size() || shelfFraction >= wallFraction)
+				continue;
+
+			bool occupied = false;
+			for (const ItemStack& stack : shelves[shelfHit].stacks)
+				if (stack.item != ItemNone) {
+					occupied = true;
+					break;
+				}
+			if (!occupied)
+				DestroyShelf(shelves[shelfHit]);
+		}
 	}
 
 	void Server::DestroyShelf(Shelf& shelf) {
@@ -647,10 +742,27 @@ namespace Trauma {
 		return true;
 	}
 
-	void Server::SendWelcome(const ClientSlot& client) {
+	void Server::SendWelcome(ClientSlot& client) {
 		Net::PacketWriter packet(Net::MessageType::Welcome);
 		packet.Write(Net::ProtocolVersion);
 		Net::WriteRagdoll(packet, client.id, client.player);
-		socket.SendTo(client.endpoint, packet.Data().data(), packet.Size());
+		client.reliable.clear();
+		if (packet.Size() <= Net::MaxDatagramSize) {
+			socket.SendTo(client.endpoint, packet.Data().data(), packet.Size());
+			return;
+		}
+
+		const uint32_t id = Net::AllocateMessageId(nextMessageId);
+		const auto datagrams = Net::FragmentMessage(packet.Data(), id, true);
+		if (datagrams.empty())
+			return;
+
+		PendingReliable message;
+		message.id = id;
+		message.datagrams = datagrams;
+		message.nextRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(Net::ReliableRetryMilliseconds);
+		message.attempts = 1;
+		client.reliable.push_back(std::move(message));
+		SendDatagrams(client.endpoint, client.reliable.back().datagrams);
 	}
 }

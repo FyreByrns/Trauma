@@ -81,6 +81,8 @@ namespace Trauma {
 		snapshots.clear();
 		assemblingTick = 0;
 		assemblingCount = 0;
+		fragments.Clear();
+		reliable.clear();
 		nextInputSequence = 1;
 		snapshotTimer = 0.0f;
 		latestServerTick = 0;
@@ -124,6 +126,8 @@ namespace Trauma {
 	}
 
 	void Client::Poll(float fElapsedTime) {
+		RetryReliableMessages();
+
 		if (status == Status::Connecting) {
 			connectingTime += fElapsedTime;
 			helloCooldown -= fElapsedTime;
@@ -196,6 +200,13 @@ namespace Trauma {
 		return false;
 	}
 
+	const RagdollState* Client::GetRemoteRagdoll(uint8_t id) const {
+		for (const PredictedRagdoll& ragdoll : predictedRagdolls)
+			if (ragdoll.id == id)
+				return &ragdoll.state;
+		return nullptr;
+	}
+
 	const std::vector<Client::ObjectView>& Client::GetObjects() const {
 		return players;
 	}
@@ -255,7 +266,7 @@ namespace Trauma {
 		shelves[index].position = position;
 	}
 
-	void Client::FireGun(size_t hotbar, const olc::vf2d& target) {
+	void Client::FireGun(size_t hotbar) {
 		if (status != Status::Connected || shotCooldown > 0.0f)
 			return;
 		Inventory& inventory = predicted.inventory;
@@ -263,24 +274,24 @@ namespace Trauma {
 			|| !LoadedMagazine(inventory, hotbar))
 			return;
 
-		const olc::vf2d origin = predicted.parts[RightHand].position;
-		const olc::vf2d delta = target - origin;
-		const float distance = delta.mag();
-		if (distance < 0.001f)
+		const GunBarrelRays barrels = ComputeGunBarrelRays(predicted, hotbar);
+		if (barrels.count == 0)
 			return;
 
 		Net::PacketWriter packet(Net::MessageType::Shoot);
-		Net::WriteShoot(packet, static_cast<uint8_t>(hotbar), target);
+		Net::WriteShoot(packet, static_cast<uint8_t>(hotbar));
 		SendPacket(packet);
 		if (!ConsumeGunRound(inventory, hotbar))
 			return;
+		ApplyGunRecoil(predicted, hotbar);
 
-		const olc::vf2d direction = delta * (1.0f / distance);
-		ShotTracer tracer;
-		tracer.start = origin;
-		tracer.end = origin + direction * std::min(distance, GunRange);
-		tracer.life = ShotTracerLifetime;
-		shotTracers.push_back(tracer);
+		for (size_t index = 0; index < barrels.count; ++index) {
+			ShotTracer tracer;
+			tracer.start = barrels.rays[index].origin;
+			tracer.end = barrels.rays[index].origin + barrels.rays[index].direction * GunRange;
+			tracer.life = ShotTracerLifetime;
+			shotTracers.push_back(tracer);
+		}
 		shotCooldown = static_cast<float>(GunCooldownTicks) * FixedDeltaTime;
 	}
 
@@ -429,12 +440,55 @@ namespace Trauma {
 		SendPacket(packet);
 	}
 
-	void Client::SendPacket(const Net::PacketWriter& packet) const {
+	void Client::SendPacket(const Net::PacketWriter& packet) {
+		if (packet.Size() <= Net::MaxDatagramSize) {
+			socket.SendTo(server, packet.Data().data(), packet.Size());
+			return;
+		}
+
+		const uint32_t id = Net::AllocateMessageId(nextMessageId);
+		const auto datagrams = Net::FragmentMessage(packet.Data(), id, true);
+		if (datagrams.empty())
+			return;
+
+		PendingReliable message;
+		message.id = id;
+		message.datagrams = datagrams;
+		message.nextRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(Net::ReliableRetryMilliseconds);
+		message.attempts = 1;
+		reliable.push_back(std::move(message));
+		for (const auto& datagram : datagrams)
+			socket.SendTo(server, datagram.data(), datagram.size());
+	}
+
+	void Client::RetryReliableMessages() {
+		const auto now = std::chrono::steady_clock::now();
+		for (auto message = reliable.begin(); message != reliable.end();) {
+			if (now < message->nextRetry) {
+				++message;
+				continue;
+			}
+			if (message->attempts >= Net::MaxReliableAttempts) {
+				message = reliable.erase(message);
+				continue;
+			}
+
+			for (const auto& datagram : message->datagrams)
+				socket.SendTo(server, datagram.data(), datagram.size());
+			++message->attempts;
+			message->nextRetry = now + std::chrono::milliseconds(Net::ReliableRetryMilliseconds);
+			++message;
+		}
+	}
+
+	void Client::SendFragmentAck(uint32_t id) const {
+		Net::PacketWriter packet(Net::MessageType::FragmentAck);
+		packet.Write(id);
 		socket.SendTo(server, packet.Data().data(), packet.Size());
 	}
 
 	void Client::PollPackets() {
-		std::array<uint8_t, 32768> buffer{};
+		std::array<uint8_t, Net::MaxDatagramSize> buffer{};
 		while (true) {
 			Net::Endpoint from;
 			const int received = socket.ReceiveFrom(from, buffer.data(), buffer.size());
@@ -450,7 +504,44 @@ namespace Trauma {
 	}
 
 	void Client::HandlePacket(Net::PacketReader& reader) {
-		switch (reader.GetType()) {
+		const Net::MessageType type = reader.GetType();
+		if (type == Net::MessageType::Fragment) {
+			Net::ReassembledMessage message;
+			if (!fragments.Add(reader, message))
+				return;
+			if (message.reliable)
+				SendFragmentAck(message.id);
+			if (message.data.empty())
+				return;
+
+			Net::PacketReader assembled(message.data.data(), message.data.size());
+			const Net::MessageType assembledType = assembled.GetType();
+			if (assembledType != Net::MessageType::Fragment && assembledType != Net::MessageType::FragmentAck)
+				HandleMessage(assembledType, assembled);
+			return;
+		}
+		if (type == Net::MessageType::FragmentAck) {
+			HandleFragmentAck(reader);
+			return;
+		}
+		HandleMessage(type, reader);
+	}
+
+	void Client::HandleFragmentAck(Net::PacketReader& reader) {
+		uint32_t id = 0;
+		if (!reader.Read(id))
+			return;
+
+		for (auto message = reliable.begin(); message != reliable.end();) {
+			if (message->id == id)
+				message = reliable.erase(message);
+			else
+				++message;
+		}
+	}
+
+	void Client::HandleMessage(Net::MessageType type, Net::PacketReader& reader) {
+		switch (type) {
 			case Net::MessageType::Welcome:
 				HandleWelcome(reader);
 				break;

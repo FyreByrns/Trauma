@@ -113,6 +113,8 @@ namespace Trauma {
 		for (ObjectState* object : objects)
 			EnsureBody(physics, *object);
 
+		for (RagdollState* ragdoll : ragdolls)
+			StepGunRecoil(*ragdoll);
 		for (RagdollState* ragdoll : ragdolls) {
 			for (size_t arm = 0; arm < ragdoll->grips.size(); ++arm)
 				ResolveHandGrip(*ragdoll, arm, objects);
