@@ -117,7 +117,7 @@ namespace Trauma {
 			if (!value)
 				return true;
 			if (!value->IsString())
-				return Fail(error, "hand must be 'none', 'left', or 'right'");
+				return Fail(error, "hand must be 'none', 'left', 'right', or 'any'");
 			const std::string name = value->GetString();
 			if (name == "none")
 				hand = HandControl::None;
@@ -125,8 +125,10 @@ namespace Trauma {
 				hand = HandControl::Left;
 			else if (name == "right")
 				hand = HandControl::Right;
+			else if (name == "any")
+				hand = HandControl::Any;
 			else
-				return Fail(error, "hand must be 'none', 'left', or 'right'");
+				return Fail(error, "hand must be 'none', 'left', 'right', or 'any'");
 			return true;
 		}
 
@@ -326,6 +328,16 @@ namespace Trauma {
 				return false;
 			if (!ParseHand(value.Find("hand"), item.hand, error))
 				return false;
+			if (const JsonValue* hands = value.Find("hands"); hands) {
+				int count = 0;
+				if (!ReadInt(hands, count) || count < 1 || count > 2)
+					return Fail(error, "item '" + item.name + "' hands must be 1 or 2");
+				item.handCount = static_cast<uint8_t>(count);
+			}
+			if (item.hand == HandControl::None)
+				item.handCount = 0;
+			else if (item.hand != HandControl::Any && item.handCount != 1)
+				return Fail(error, "item '" + item.name + "' can only use multiple hands with hand 'any'");
 			if (const JsonValue* colour = value.Find("colour"); colour) {
 				if (!ParseColour(colour, item.colour))
 					return Fail(error, "item '" + item.name + "' has an invalid colour");

@@ -129,7 +129,8 @@ namespace Trauma {
 	enum class HandControl : uint8_t {
 		None,
 		Left,
-		Right
+		Right,
+		Any
 	};
 
 	struct ItemBodyDefinition {
@@ -166,6 +167,7 @@ namespace Trauma {
 		ItemBodyDefinition body;
 		GunPoseDefinition gunPose;
 		HandControl hand = HandControl::None;
+		uint8_t handCount = 1;
 		uint8_t maxStack = 1;
 		uint8_t maxCharge = 0;
 		uint8_t defaultCharge = 0;
@@ -257,15 +259,11 @@ namespace Trauma {
 		return item != ItemNone;
 	}
 
-	inline HandControl SelectedHandControl(const Inventory& inventory) {
-		if (inventory.selected >= inventory.hotbar.size())
-			return HandControl::None;
-		return ItemHandControl(inventory.hotbar[inventory.selected].item);
-	}
-
-	inline bool HandControlIncludes(HandControl control, size_t arm) {
-		return (arm == 0 && control == HandControl::Left)
-			|| (arm == 1 && control == HandControl::Right);
+	inline uint8_t ItemHandCount(ItemId item) {
+		const ItemDefinition& definition = ItemDefinitionFor(item);
+		if (definition.hand == HandControl::None)
+			return 0;
+		return definition.handCount;
 	}
 
 	inline bool IsGun(ItemId item) {

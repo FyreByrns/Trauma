@@ -89,10 +89,38 @@ namespace Trauma {
 		return ragdoll;
 	}
 
+	inline uint8_t ItemHandMask(const RagdollState& ragdoll, ItemId item) {
+		const HandControl control = ItemHandControl(item);
+		if (control == HandControl::None)
+			return 0;
+		if (control == HandControl::Left)
+			return 1;
+		if (control == HandControl::Right)
+			return 2;
+		const uint8_t free = static_cast<uint8_t>((ragdoll.grips[0].target == 0 ? 1 : 0)
+			| (ragdoll.grips[1].target == 0 ? 2 : 0));
+		if (ItemHandCount(item) >= 2)
+			return free == 3 ? 3 : 0;
+		if ((free & 2) != 0)
+			return 2;
+		return static_cast<uint8_t>(free & 1);
+	}
+
+	inline size_t ItemPrimaryArm(uint8_t mask) {
+		return (mask & 2) != 0 ? 1 : 0;
+	}
+
+	inline bool GunFollowsHand(const RagdollState& ragdoll) {
+		return ragdoll.ladder != 0
+			|| (!ragdoll.input.reachRight
+				&& GetMovementState(ragdoll.input) == MovementState::Crawling);
+	}
+
 	inline olc::vf2d HeldItemDirection(const std::array<olc::vf2d, PartCount>& pose,
-		const InputState& input, float facing, bool leftHand, ItemId item, float recoil = 0.0f) {
+		const InputState& input, float facing, bool leftHand, ItemId item, float recoil = 0.0f,
+		bool followHand = false) {
 		const bool gun = IsGun(item);
-		olc::vf2d direction = gun ? input.aim
+		olc::vf2d direction = gun && !followHand ? input.aim
 			: pose[leftHand ? LeftHand : RightHand] - pose[leftHand ? LeftElbow : RightElbow];
 		if (direction.mag2() < 0.0001f)
 			direction = { facing, 0.0f };
@@ -135,13 +163,16 @@ namespace Trauma {
 		const ItemId item = ragdoll.inventory.hotbar[hotbar].item;
 		if (!IsGun(item))
 			return result;
+		const uint8_t handMask = ItemHandMask(ragdoll, item);
+		if (handMask == 0)
+			return result;
 
 		std::array<olc::vf2d, PartCount> pose;
 		for (size_t i = 0; i < PartCount; ++i)
 			pose[i] = ragdoll.parts[i].position;
-		const bool leftHand = ItemHandControl(item) == HandControl::Left;
+		const bool leftHand = ItemPrimaryArm(handMask) == 0;
 		const olc::vf2d unit = HeldItemDirection(pose, ragdoll.input, ragdoll.facing,
-			leftHand, item, ragdoll.gunRecoil);
+			leftHand, item, ragdoll.gunRecoil, GunFollowsHand(ragdoll));
 		const olc::vf2d hand = pose[leftHand ? LeftHand : RightHand];
 		const olc::vf2d center = hand + unit * HeldItemCenterOffset(item);
 		const float bodyAngle = std::atan2(unit.y, unit.x);
@@ -168,12 +199,16 @@ namespace Trauma {
 		const GunRecoilDefinition& recoil = ItemDefinitionFor(item).gunPose.recoil;
 		if (std::abs(recoil.amount) < 0.000001f)
 			return 0.0f;
+		const uint8_t handMask = ItemHandMask(ragdoll, item);
+		if (handMask == 0)
+			return 0.0f;
 
 		std::array<olc::vf2d, PartCount> pose;
 		for (size_t i = 0; i < PartCount; ++i)
 			pose[i] = ragdoll.parts[i].position;
-		const bool leftHand = ItemHandControl(item) == HandControl::Left;
-		const olc::vf2d base = HeldItemDirection(pose, ragdoll.input, ragdoll.facing, leftHand, item);
+		const bool leftHand = ItemPrimaryArm(handMask) == 0;
+		const olc::vf2d base = HeldItemDirection(pose, ragdoll.input, ragdoll.facing, leftHand,
+			item, 0.0f, GunFollowsHand(ragdoll));
 		const float cross = base.x * recoil.direction.y - base.y * recoil.direction.x;
 		return recoil.amount * cross;
 	}
@@ -195,8 +230,11 @@ namespace Trauma {
 			ragdoll.gunRecoil = 0.0f;
 			return;
 		}
-		const bool leftHand = ItemHandControl(item) == HandControl::Left;
-		const bool aiming = leftHand ? ragdoll.input.reachLeft : ragdoll.input.reachRight;
+		if (ItemHandMask(ragdoll, item) == 0) {
+			ragdoll.gunRecoil = 0.0f;
+			return;
+		}
+		const bool aiming = ragdoll.input.reachRight;
 		const GunRecoilDefinition& recoil = ItemDefinitionFor(item).gunPose.recoil;
 		const float recovery = aiming ? recoil.aimingRecovery : recoil.lowReadyRecovery;
 		ragdoll.gunRecoil *= std::exp(-std::max(0.0f, recovery) * FixedDeltaTime);
@@ -270,10 +308,14 @@ namespace Trauma {
 		const ItemId selectedItem = ragdoll.inventory.selected < ragdoll.inventory.hotbar.size()
 			? ragdoll.inventory.hotbar[ragdoll.inventory.selected].item : ItemNone;
 		const bool holdingGun = IsGun(selectedItem);
+		const uint8_t heldMask = holdingGun ? ItemHandMask(ragdoll, selectedItem) : 0;
+		const size_t heldArm = heldMask != 0 ? ItemPrimaryArm(heldMask) : PartCount;
+		const bool gunAiming = holdingGun && ragdoll.input.reachRight;
 		const GunPoseDefinition& gunPose = ItemDefinitionFor(selectedItem).gunPose;
 		const olc::vf2d aimDirection = ragdoll.input.aim.mag2() > 0.0001f
 			? ragdoll.input.aim.norm() : olc::vf2d{ facing, 0.0f };
-		const float aimAngle = std::atan2(aimDirection.y, aimDirection.x);
+		const float aimAngle = std::atan2(aimDirection.y, aimDirection.x)
+			+ (holdingGun ? ragdoll.gunRecoil : 0.0f);
 
 		const olc::vf2d hip = targets[Hips];
 		for (int leg = 0; leg < 2; ++leg) {
@@ -303,13 +345,18 @@ namespace Trauma {
 			const RagdollPart hand = arm == 0 ? LeftHand : RightHand;
 			const float phase = arm == 0 ? -swing : swing;
 			olc::vf2d offset;
-			if (reaching)
-				offset = arm == 1 && holdingGun
-					? Rotate(gunPose.aimingHand, aimAngle) : ragdoll.input.aim;
-			else if (arm == 1 && holdingGun)
-				offset = olc::vf2d{ gunPose.lowReadyHand.x * facing, gunPose.lowReadyHand.y };
+			if (gunAiming && arm == heldArm)
+				offset = Rotate(gunPose.aimingHand, aimAngle);
+			else if (gunAiming && heldMask == 3)
+				offset = Rotate(gunPose.aimingHand, aimAngle) - Rotate({ 6.0f, 0.0f }, aimAngle);
 			else if (movement == MovementState::Crawling)
 				offset = olc::vf2d{ (12.0f + phase * 5.0f) * facing, 10.0f - std::max(0.0f, phase) * 2.0f };
+			else if (arm == heldArm)
+				offset = Rotate(gunPose.lowReadyHand, aimAngle);
+			else if (holdingGun && heldMask == 3)
+				offset = Rotate(gunPose.lowReadyHand, aimAngle) - Rotate({ 6.0f, 0.0f }, aimAngle);
+			else if (reaching && !holdingGun)
+				offset = ragdoll.input.aim;
 			else
 				offset = olc::vf2d{ (4.0f + phase * armSwing) * facing, 22.0f };
 			const TwoBoneIkResult pose = SolveTwoBoneIk(torso, torso + offset,
@@ -582,8 +629,23 @@ namespace Trauma {
 		HandGrip& grip = ragdoll.grips[arm];
 		ObjectState& hand = ragdoll.parts[arm == 0 ? LeftHand : RightHand];
 		hand.angle = HandFacingAngle(ragdoll, arm);
-		if (HandControlIncludes(SelectedHandControl(ragdoll.inventory), arm)
-			|| !(arm == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight) || !ragdoll.input.grab) {
+		const size_t selected = ragdoll.inventory.selected;
+		const ItemId selectedItem = selected < ragdoll.inventory.hotbar.size()
+			? ragdoll.inventory.hotbar[selected].item : ItemNone;
+		const uint8_t heldMask = ItemHandMask(ragdoll, selectedItem);
+		if ((heldMask & (1u << arm)) != 0) {
+			if (IsGun(selectedItem)) {
+				std::array<olc::vf2d, PartCount> pose;
+				for (size_t i = 0; i < PartCount; ++i)
+					pose[i] = ragdoll.parts[i].position;
+				const olc::vf2d unit = HeldItemDirection(pose, ragdoll.input, ragdoll.facing,
+					arm == 0, selectedItem, ragdoll.gunRecoil, GunFollowsHand(ragdoll));
+				hand.angle = std::atan2(unit.y, unit.x);
+			}
+			grip = {};
+			return;
+		}
+		if (!(arm == 0 ? ragdoll.input.reachLeft : ragdoll.input.reachRight) || !ragdoll.input.grab) {
 			grip = {};
 			return;
 		}

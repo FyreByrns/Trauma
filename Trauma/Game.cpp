@@ -640,18 +640,21 @@ namespace Trauma {
 
 		if (ragdoll && ragdoll->inventory.selected < ragdoll->inventory.hotbar.size()) {
 			const ItemStack& held = ragdoll->inventory.hotbar[ragdoll->inventory.selected];
-			const bool leftHand = SelectedHandControl(ragdoll->inventory) == HandControl::Left;
-			const RagdollPart hand = leftHand ? LeftHand : RightHand;
-			if (held.item != ItemNone && ragdoll->grips[leftHand ? 0 : 1].target == 0) {
-				const olc::vf2d unit = HeldItemDirection(pose, ragdoll->input, facing, leftHand,
-					held.item, ragdoll->gunRecoil);
-				ObjectState body = CreateItemBody(held.item,
-					pose[hand] + unit * HeldItemCenterOffset(held.item));
-				body.angle = std::atan2(unit.y, unit.x);
-				const bool visible = body.shape == Shape::Polygon
-					? body.vertexCount >= 3 : body.radius > 0.0f;
-				if (visible)
-					DrawItem(held.item, body);
+			const uint8_t heldMask = ItemHandMask(*ragdoll, held.item);
+			if (held.item != ItemNone && heldMask != 0) {
+				const bool leftHand = ItemPrimaryArm(heldMask) == 0;
+				const RagdollPart hand = leftHand ? LeftHand : RightHand;
+				if (ragdoll->grips[leftHand ? 0 : 1].target == 0) {
+					const olc::vf2d unit = HeldItemDirection(pose, ragdoll->input, facing, leftHand,
+						held.item, ragdoll->gunRecoil, GunFollowsHand(*ragdoll));
+					ObjectState body = CreateItemBody(held.item,
+						pose[hand] + unit * HeldItemCenterOffset(held.item));
+					body.angle = std::atan2(unit.y, unit.x);
+					const bool visible = body.shape == Shape::Polygon
+						? body.vertexCount >= 3 : body.radius > 0.0f;
+					if (visible)
+						DrawItem(held.item, body);
+				}
 			}
 		}
 	}

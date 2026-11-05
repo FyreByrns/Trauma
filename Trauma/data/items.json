@@ -70,7 +70,7 @@
       "colour": [95, 100, 110],
       "body": { "shape": "box", "halfExtents": [7.0, 3.0], "density": 0.8 },
       "gunPose": {
-        "lowReadyHand": [10.0, 16.0],
+        "lowReadyHand": [10.0, 0.0],
         "aimingHand": [20.0, 0.0],
         "barrels": [
           { "position": [7.0, 0.0], "angleDegrees": 0.0 }
