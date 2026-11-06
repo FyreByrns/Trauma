@@ -89,7 +89,10 @@ namespace Trauma {
 		Ui::BeginFrame(*this, deltaTime);
 
 		if (keyboard.GetKey(olc::Key::ESCAPE).bPressed) {
-			paused = !paused;
+			if (settingsOpen)
+				settingsOpen = false;
+			else
+				paused = !paused;
 			dropMode = false;
 			shelfMode = false;
 			movingShelfActive = false;
@@ -121,6 +124,7 @@ namespace Trauma {
 		localRenderReady = false;
 		jumpQueued = false;
 		paused = false;
+		settingsOpen = false;
 		drag = ItemDrag{};
 		openContainers.clear();
 		dropMode = false;
@@ -736,8 +740,11 @@ namespace Trauma {
 			if (dropMode && client.GetLocalRagdoll().inventory.hotbar[hotbarSelection].item != ItemNone)
 				DrawItemGhost(client.GetLocalRagdoll().inventory.hotbar[hotbarSelection].item);
 		}
-		if (paused)
+		if (paused) {
 			BuildPauseMenu();
+			if (settingsOpen)
+				BuildSettings();
+		}
 	}
 
 	void Game::BuildPickupLabel() {
@@ -1313,13 +1320,98 @@ namespace Trauma {
 			| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
 
 		const ImVec2 buttonSize(200.0f, 0.0f);
-		if (ImGui::Button("Resume", buttonSize))
+		if (ImGui::Button("Resume", buttonSize)) {
 			paused = false;
+			settingsOpen = false;
+		}
+		if (ImGui::Button(settingsOpen ? "Hide Settings" : "Settings", buttonSize))
+			settingsOpen = !settingsOpen;
 		if (ImGui::Button("Disconnect", buttonSize))
 			LeavePlay();
 		if (ImGui::Button("Quit", buttonSize)) {
 			LeavePlay();
 			quitting = true;
+		}
+
+		ImGui::End();
+	}
+
+	void Game::BuildSettings() {
+		ImGuiIO& io = ImGui::GetIO();
+		ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+			ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(480.0f, 560.0f), ImGuiCond_Appearing);
+
+		bool open = settingsOpen;
+		const bool visible = ImGui::Begin("Settings", &open,
+			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+		if (!open)
+			settingsOpen = false;
+
+		if (visible) {
+			ImGuiStyle& style = ImGui::GetStyle();
+			ImGui::TextDisabled("ImGui appearance");
+			if (ImGui::Button("Reset"))
+				Ui::ResetStyle();
+			ImGui::SameLine();
+			if (ImGui::Button("Dark"))
+				ImGui::StyleColorsDark();
+			ImGui::SameLine();
+			if (ImGui::Button("Light"))
+				ImGui::StyleColorsLight();
+			ImGui::SameLine();
+			if (ImGui::Button("Classic"))
+				ImGui::StyleColorsClassic();
+
+			ImGui::Spacing();
+			if (ImGui::Button("Save as Default")) {
+				styleSaveSucceeded = Ui::SaveStyle();
+				styleSavedAt = ImGui::GetTime();
+			}
+			if (styleSavedAt >= 0.0 && ImGui::GetTime() - styleSavedAt < 2.5) {
+				ImGui::SameLine();
+				ImGui::TextDisabled(styleSaveSucceeded ? "Saved" : "Save failed");
+			}
+
+			if (ImGui::CollapsingHeader("Colors", ImGuiTreeNodeFlags_DefaultOpen)) {
+				const ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs
+					| ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf;
+				ImGui::BeginChild("##styleColors", ImVec2(0.0f, 250.0f), ImGuiChildFlags_Borders);
+				for (int index = 0; index < ImGuiCol_COUNT; ++index)
+					ImGui::ColorEdit4(ImGui::GetStyleColorName(static_cast<ImGuiCol>(index)),
+						&style.Colors[index].x, flags);
+				ImGui::EndChild();
+			}
+
+			if (ImGui::CollapsingHeader("Shape", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::SliderFloat("Window rounding", &style.WindowRounding, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Child rounding", &style.ChildRounding, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Frame rounding", &style.FrameRounding, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Popup rounding", &style.PopupRounding, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Scrollbar rounding", &style.ScrollbarRounding, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Grab rounding", &style.GrabRounding, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Tab rounding", &style.TabRounding, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Window border", &style.WindowBorderSize, 0.0f, 4.0f, "%.0f");
+				ImGui::SliderFloat("Child border", &style.ChildBorderSize, 0.0f, 4.0f, "%.0f");
+				ImGui::SliderFloat("Popup border", &style.PopupBorderSize, 0.0f, 4.0f, "%.0f");
+				ImGui::SliderFloat("Frame border", &style.FrameBorderSize, 0.0f, 4.0f, "%.0f");
+				ImGui::SliderFloat("Tab border", &style.TabBorderSize, 0.0f, 4.0f, "%.0f");
+			}
+
+			if (ImGui::CollapsingHeader("Spacing", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::SliderFloat2("Window padding", &style.WindowPadding.x, 0.0f, 24.0f, "%.0f");
+				ImGui::SliderFloat2("Frame padding", &style.FramePadding.x, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat2("Cell padding", &style.CellPadding.x, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat2("Item spacing", &style.ItemSpacing.x, 0.0f, 24.0f, "%.0f");
+				ImGui::SliderFloat2("Inner spacing", &style.ItemInnerSpacing.x, 0.0f, 16.0f, "%.0f");
+				ImGui::SliderFloat("Scrollbar size", &style.ScrollbarSize, 8.0f, 32.0f, "%.0f");
+				ImGui::SliderFloat("Grab minimum", &style.GrabMinSize, 4.0f, 32.0f, "%.0f");
+			}
+
+			if (ImGui::CollapsingHeader("Transparency", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::SliderFloat("Global alpha", &style.Alpha, 0.2f, 1.0f);
+				ImGui::SliderFloat("Disabled alpha", &style.DisabledAlpha, 0.0f, 1.0f);
+			}
 		}
 
 		ImGui::End();

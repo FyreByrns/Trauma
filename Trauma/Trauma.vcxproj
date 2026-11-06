@@ -162,6 +162,9 @@
     <Content Include="data\items.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="data\Roboto-Medium.ttf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <ClInclude Include="Ragdoll.h" />
     <ClInclude Include="Simulation.h" />
     <ClInclude Include="Json.h" />

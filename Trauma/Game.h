@@ -91,6 +91,7 @@ namespace Trauma {
 		void BuildHud();
 		void BuildPickupLabel();
 		void BuildPauseMenu();
+		void BuildSettings();
 		SlotResult BuildSlot(const char* id, const Inventory& inventory,
 			const SlotAddress& address, const ItemStack& stack, const char* caption, bool selected);
 		bool IsContainerOpen(const SlotAddress& address) const;
@@ -121,6 +122,9 @@ namespace Trauma {
 
 		bool grabsEnabled = true;
 		bool paused = false;
+		bool settingsOpen = false;
+		bool styleSaveSucceeded = false;
+		double styleSavedAt = -1.0;
 		bool quitting = false;
 		uint8_t hotbarSelection = 0;
 		std::vector<OpenContainerWindow> openContainers;

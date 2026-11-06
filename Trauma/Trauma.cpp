@@ -4,6 +4,7 @@
 #include "MovementProbe.h"
 #include "Network.h"
 #include "Server.h"
+#include "Ui.h"
 #include <charconv>
 #include <filesystem>
 #include <iostream>
@@ -57,6 +58,7 @@ int main(int argc, char** argv) {
 		std::cout << itemError << std::endl;
 		return 1;
 	}
+	Trauma::Ui::SetDataDirectory(itemPath.parent_path().string());
 
 	if (argc > 1 && std::string(argv[1]) == "--movement-probe")
 		return Trauma::RunMovementProbe() ? 0 : 1;

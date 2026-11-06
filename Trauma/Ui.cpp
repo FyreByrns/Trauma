@@ -1,8 +1,13 @@
 #include "Ui.h"
 #include "olcPixelGameEngine3.h"
+#include "Json.h"
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Trauma {
@@ -83,8 +88,140 @@ namespace Trauma {
 			};
 
 			ImGuiContext* context = nullptr;
+			ImGuiStyle defaultStyle;
 			std::unique_ptr<olc::Image> fontAtlas;
 			bool ready = false;
+
+			std::string dataDirectory = "data";
+
+			struct StyleFloatField {
+				const char* name;
+				float ImGuiStyle::* member;
+			};
+
+			const StyleFloatField StyleFloatFields[] = {
+				{ "Alpha", &ImGuiStyle::Alpha },
+				{ "DisabledAlpha", &ImGuiStyle::DisabledAlpha },
+				{ "WindowRounding", &ImGuiStyle::WindowRounding },
+				{ "ChildRounding", &ImGuiStyle::ChildRounding },
+				{ "FrameRounding", &ImGuiStyle::FrameRounding },
+				{ "PopupRounding", &ImGuiStyle::PopupRounding },
+				{ "ScrollbarRounding", &ImGuiStyle::ScrollbarRounding },
+				{ "GrabRounding", &ImGuiStyle::GrabRounding },
+				{ "TabRounding", &ImGuiStyle::TabRounding },
+				{ "WindowBorderSize", &ImGuiStyle::WindowBorderSize },
+				{ "ChildBorderSize", &ImGuiStyle::ChildBorderSize },
+				{ "PopupBorderSize", &ImGuiStyle::PopupBorderSize },
+				{ "FrameBorderSize", &ImGuiStyle::FrameBorderSize },
+				{ "TabBorderSize", &ImGuiStyle::TabBorderSize },
+				{ "ScrollbarSize", &ImGuiStyle::ScrollbarSize },
+				{ "GrabMinSize", &ImGuiStyle::GrabMinSize },
+			};
+
+			struct StyleVec2Field {
+				const char* name;
+				ImVec2 ImGuiStyle::* member;
+			};
+
+			const StyleVec2Field StyleVec2Fields[] = {
+				{ "WindowPadding", &ImGuiStyle::WindowPadding },
+				{ "FramePadding", &ImGuiStyle::FramePadding },
+				{ "CellPadding", &ImGuiStyle::CellPadding },
+				{ "ItemSpacing", &ImGuiStyle::ItemSpacing },
+				{ "ItemInnerSpacing", &ImGuiStyle::ItemInnerSpacing },
+			};
+
+			std::filesystem::path StylePath() {
+				return std::filesystem::path(dataDirectory) / "imgui_style.json";
+			}
+
+			std::filesystem::path FontPath() {
+				return std::filesystem::path(dataDirectory) / "Roboto-Medium.ttf";
+			}
+
+			bool LoadStyleFile() {
+				std::error_code existsError;
+				if (!std::filesystem::exists(StylePath(), existsError) || existsError)
+					return false;
+				std::ifstream stream(StylePath(), std::ios::binary);
+				if (!stream)
+					return false;
+				const std::string text((std::istreambuf_iterator<char>(stream)),
+					std::istreambuf_iterator<char>());
+				if (text.empty())
+					return false;
+				std::string error;
+				const JsonValue root = JsonValue::Parse(text, error);
+				if (!root.IsObject())
+					return false;
+				ImGuiStyle& style = ImGui::GetStyle();
+				if (const JsonValue* colors = root.Find("colors"); colors && colors->IsArray()) {
+					const JsonValue::Array& values = colors->Items();
+					for (size_t index = 0; index < values.size()
+						&& index < static_cast<size_t>(ImGuiCol_COUNT); ++index) {
+						const JsonValue& color = values[index];
+						if (!color.IsArray() || color.Items().size() < 4)
+							continue;
+						const JsonValue::Array& channels = color.Items();
+						style.Colors[index] = ImVec4(
+							static_cast<float>(channels[0].GetNumber(style.Colors[index].x)),
+							static_cast<float>(channels[1].GetNumber(style.Colors[index].y)),
+							static_cast<float>(channels[2].GetNumber(style.Colors[index].z)),
+							static_cast<float>(channels[3].GetNumber(style.Colors[index].w)));
+					}
+				}
+				for (const StyleFloatField& field : StyleFloatFields) {
+					const JsonValue* value = root.Find(field.name);
+					if (value && value->IsNumber())
+						style.*(field.member) = static_cast<float>(value->GetNumber());
+				}
+				for (const StyleVec2Field& field : StyleVec2Fields) {
+					const JsonValue* value = root.Find(field.name);
+					if (!value || !value->IsArray() || value->Items().size() < 2)
+						continue;
+					ImVec2& target = style.*(field.member);
+					target.x = static_cast<float>(value->Items()[0].GetNumber(target.x));
+					target.y = static_cast<float>(value->Items()[1].GetNumber(target.y));
+				}
+				return true;
+			}
+
+			bool SaveStyleFile() {
+				const ImGuiStyle& style = ImGui::GetStyle();
+				JsonValue root = JsonValue::MakeObject();
+				root["version"] = JsonValue::MakeNumber(1.0);
+				JsonValue colors = JsonValue::MakeArray();
+				for (int index = 0; index < ImGuiCol_COUNT; ++index) {
+					JsonValue color = JsonValue::MakeArray();
+					color.Items().push_back(JsonValue::MakeNumber(style.Colors[index].x));
+					color.Items().push_back(JsonValue::MakeNumber(style.Colors[index].y));
+					color.Items().push_back(JsonValue::MakeNumber(style.Colors[index].z));
+					color.Items().push_back(JsonValue::MakeNumber(style.Colors[index].w));
+					colors.Items().push_back(std::move(color));
+				}
+				root["colors"] = std::move(colors);
+				for (const StyleFloatField& field : StyleFloatFields)
+					root[field.name] = JsonValue::MakeNumber(style.*(field.member));
+				for (const StyleVec2Field& field : StyleVec2Fields) {
+					const ImVec2& value = style.*(field.member);
+					JsonValue pair = JsonValue::MakeArray();
+					pair.Items().push_back(JsonValue::MakeNumber(value.x));
+					pair.Items().push_back(JsonValue::MakeNumber(value.y));
+					root[field.name] = std::move(pair);
+				}
+				const std::filesystem::path path = StylePath();
+				std::error_code directoryError;
+				if (!path.parent_path().empty())
+					std::filesystem::create_directories(path.parent_path(), directoryError);
+				if (directoryError)
+					return false;
+				std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+				if (!stream)
+					return false;
+				const std::string text = root.Serialize(2);
+				stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+				return stream.good();
+			}
 
 			struct UiVertex {
 				ImVec2 position;
@@ -151,6 +288,9 @@ namespace Trauma {
 
 				IMGUI_CHECKVERSION();
 				context = ImGui::CreateContext();
+				ImGui::StyleColorsDark();
+				LoadStyleFile();
+				defaultStyle = ImGui::GetStyle();
 				ImGuiIO& io = ImGui::GetIO();
 				io.IniFilename = nullptr;
 				io.LogFilename = nullptr;
@@ -159,11 +299,22 @@ namespace Trauma {
 				io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
 				ImFontConfig fontConfig;
-				fontConfig.SizePixels = 16.0f;
+				fontConfig.SizePixels = 17.0f;
 				fontConfig.OversampleH = 1;
 				fontConfig.OversampleV = 1;
 				fontConfig.PixelSnapH = true;
-				io.Fonts->AddFontDefault(&fontConfig);
+				std::error_code fontError;
+				const std::filesystem::path fontPath = FontPath();
+				const bool hasFont = !dataDirectory.empty()
+					&& std::filesystem::exists(fontPath, fontError) && !fontError;
+				ImFont* font = hasFont
+					? io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), 17.0f, &fontConfig,
+						io.Fonts->GetGlyphRangesDefault())
+					: nullptr;
+				if (font == nullptr) {
+					fontConfig.SizePixels = 16.0f;
+					io.Fonts->AddFontDefault(&fontConfig);
+				}
 
 				unsigned char* pixels = nullptr;
 				int width = 0;
@@ -192,6 +343,24 @@ namespace Trauma {
 				ready = true;
 				return true;
 			}
+		}
+
+		void SetDataDirectory(std::string directory) {
+			if (!directory.empty())
+				dataDirectory = std::move(directory);
+		}
+
+		bool SaveStyle() {
+			if (!ready || !SaveStyleFile())
+				return false;
+			defaultStyle = ImGui::GetStyle();
+			return true;
+		}
+
+		void ResetStyle() {
+			if (!ready)
+				return;
+			ImGui::GetStyle() = defaultStyle;
 		}
 
 		void BeginFrame(olc::PGEWindow& window, float elapsedTime) {
