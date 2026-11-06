@@ -1,0 +1,3 @@
+[submodule "Trauma/third_party/imgui"]
+	path = Trauma/third_party/imgui
+	url = https://github.com/ocornut/imgui.git
