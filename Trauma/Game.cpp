@@ -177,22 +177,21 @@ namespace Trauma {
 			olc::Key::K1, olc::Key::K2, olc::Key::K3, olc::Key::K4, olc::Key::K5,
 			olc::Key::K6, olc::Key::K7, olc::Key::K8, olc::Key::K9, olc::Key::K0 };
 		for (size_t i = 0; i < slotKeys.size(); ++i)
-			if (keyboard.GetKey(slotKeys[i]).bPressed) {
-				hotbarSelection = static_cast<uint8_t>(i);
-				dropMode = false;
-				shelfMode = false;
-				movingShelfActive = false;
-			}
+			if (keyboard.GetKey(slotKeys[i]).bPressed)
+				ToggleHotbarSlot(static_cast<uint8_t>(i));
 
 		const int wheel = mouse.GetWheel();
 		if (wheel != 0) {
 			const int slotCount = static_cast<int>(HotbarSlots);
-			const int step = wheel > 0 ? -1 : 1;
-			const int selected = (static_cast<int>(hotbarSelection) + step + slotCount) % slotCount;
-			hotbarSelection = static_cast<uint8_t>(selected);
-			dropMode = false;
-			shelfMode = false;
-			movingShelfActive = false;
+			uint8_t target = 0;
+			if (hotbarSelection >= HotbarSlots)
+				target = wheel > 0 ? static_cast<uint8_t>(slotCount - 1) : 0;
+			else {
+				const int step = wheel > 0 ? -1 : 1;
+				const int selected = (static_cast<int>(hotbarSelection) + step + slotCount) % slotCount;
+				target = static_cast<uint8_t>(selected);
+			}
+			ToggleHotbarSlot(target);
 		}
 
 		if (keyboard.GetKey(olc::Key::E).bPressed) {
@@ -205,6 +204,15 @@ namespace Trauma {
 			ReloadGun();
 	}
 
+	void Game::ToggleHotbarSlot(uint8_t slot) {
+		if (slot >= HotbarSlots)
+			return;
+		hotbarSelection = hotbarSelection == slot ? NoHotbarSlot : slot;
+		dropMode = false;
+		shelfMode = false;
+		movingShelfActive = false;
+	}
+
 	void Game::UpdateGrabMode() {
 		if (keyboard.GetKey(olc::Key::G).bPressed)
 			grabsEnabled = !grabsEnabled;
@@ -212,7 +220,8 @@ namespace Trauma {
 
 	void Game::UpdateGunFire() {
 		const Inventory& inventory = client.GetLocalRagdoll().inventory;
-		if (!IsGun(inventory.hotbar[hotbarSelection].item) || dropMode || shelfMode
+		if (hotbarSelection >= inventory.hotbar.size()
+			|| !IsGun(inventory.hotbar[hotbarSelection].item) || dropMode || shelfMode
 			|| drag.active || Ui::WantsMouse() || keyboard.GetKey(olc::Key::Q).bPressed
 			|| !mouse.GetButton(0).bPressed)
 			return;
@@ -245,7 +254,14 @@ namespace Trauma {
 	}
 
 	void Game::UpdateDropMode() {
-		const ItemStack& selected = client.GetLocalRagdoll().inventory.hotbar[hotbarSelection];
+		const Inventory& inventory = client.GetLocalRagdoll().inventory;
+		if (hotbarSelection >= inventory.hotbar.size()) {
+			dropMode = false;
+			shelfMode = false;
+			movingShelfActive = false;
+			return;
+		}
+		const ItemStack& selected = inventory.hotbar[hotbarSelection];
 		if (keyboard.GetKey(olc::Key::Q).bPressed) {
 			if (IsShelf(selected.item)) {
 				shelfMode = !shelfMode;
@@ -299,9 +315,11 @@ namespace Trauma {
 
 	void Game::UpdateDropPreview() {
 		dropPreview = DropPreview{};
-		const ItemStack& selected = client.GetLocalRagdoll().inventory.hotbar[hotbarSelection];
-		const ItemId item = drag.active ? drag.item : selected.item;
-		const bool shelfPreview = drag.active ? IsShelf(drag.item) : shelfMode;
+		const Inventory& inventory = client.GetLocalRagdoll().inventory;
+		const bool hotbarSelected = hotbarSelection < inventory.hotbar.size();
+		const ItemId selectedItem = hotbarSelected ? inventory.hotbar[hotbarSelection].item : ItemNone;
+		const ItemId item = drag.active ? drag.item : selectedItem;
+		const bool shelfPreview = drag.active ? IsShelf(drag.item) : hotbarSelected && shelfMode;
 		if ((!drag.active && !dropMode && !shelfPreview) || item == ItemNone)
 			return;
 
@@ -403,7 +421,9 @@ namespace Trauma {
 			input.grab = false;
 		}
 
-		if (IsGun(client.GetLocalRagdoll().inventory.hotbar[hotbarSelection].item))
+		const Inventory& inventory = client.GetLocalRagdoll().inventory;
+		if (hotbarSelection < inventory.hotbar.size()
+			&& IsGun(inventory.hotbar[hotbarSelection].item))
 			input.reachLeft = false;
 
 		if (keyboard.GetKey(olc::Key::A).bHeld || keyboard.GetKey(olc::Key::LEFT).bHeld)
@@ -737,8 +757,10 @@ namespace Trauma {
 		if (client.GetStatus() == Client::Status::Connected) {
 			BuildHud();
 			BuildPickupLabel();
-			if (dropMode && client.GetLocalRagdoll().inventory.hotbar[hotbarSelection].item != ItemNone)
-				DrawItemGhost(client.GetLocalRagdoll().inventory.hotbar[hotbarSelection].item);
+			const Inventory& inventory = client.GetLocalRagdoll().inventory;
+			if (dropMode && hotbarSelection < inventory.hotbar.size()
+				&& inventory.hotbar[hotbarSelection].item != ItemNone)
+				DrawItemGhost(inventory.hotbar[hotbarSelection].item);
 		}
 		if (paused) {
 			BuildPauseMenu();
@@ -823,12 +845,16 @@ namespace Trauma {
 
 		std::array<SlotResult, HotbarSlots> hotbarResults{};
 
-		const bool hasHotbarContainer = std::any_of(inventory.hotbar.begin(), inventory.hotbar.end(),
-			[](const ItemStack& stack) { return ItemContainerCapacity(stack.item) > 0; });
+		const bool hasContainerButton = std::any_of(inventory.hotbar.begin(), inventory.hotbar.end(),
+			[](const ItemStack& stack) { return ItemContainerCapacity(stack.item) > 0; })
+			|| ItemContainerCapacity(inventory.back.item) > 0
+			|| ItemContainerCapacity(inventory.belt.item) > 0;
 
-		const ItemStack& held = inventory.hotbar[inventory.selected];
+		const ItemStack empty;
+		const ItemStack& held = hotbarSelection < inventory.hotbar.size()
+			? inventory.hotbar[hotbarSelection] : empty;
 		if (IsGun(held.item)) {
-			const ItemStack* magazine = GunMagazine(inventory, inventory.selected);
+			const ItemStack* magazine = GunMagazine(inventory, hotbarSelection);
 			if (magazine)
 				ImGui::TextColored(HudText, "gun  magazine x%u",
 					static_cast<unsigned>(magazine->charge));
@@ -847,7 +873,7 @@ namespace Trauma {
 		else
 			ImGui::TextColored(HudText, "%s", held.item == ItemNone ? " " : ItemName(held.item));
 
-		if (hasHotbarContainer)
+		if (hasContainerButton)
 			ImGui::Dummy(ImVec2(1.0f, ContainerButtonHeight));
 
 		for (size_t index = 0; index < HotbarSlots; ++index) {
@@ -859,15 +885,12 @@ namespace Trauma {
 			std::snprintf(caption, sizeof(caption), "%zu", (index + 1) % 10);
 
 			hotbarResults[index] = BuildSlot(id, inventory, HotbarAddress(index),
-				inventory.hotbar[index], caption, index == inventory.selected);
+				inventory.hotbar[index], caption, index == hotbarSelection);
 			const SlotResult& result = hotbarResults[index];
 			if (result.clicked) {
-				if (dropMode)
+				if (dropMode && hotbarSelection < HotbarSlots && hotbarSelection != index)
 					client.MoveItem(HotbarAddress(hotbarSelection), HotbarAddress(index));
-				hotbarSelection = static_cast<uint8_t>(index);
-				dropMode = false;
-				shelfMode = false;
-				movingShelfActive = false;
+				ToggleHotbarSlot(static_cast<uint8_t>(index));
 			}
 			if (result.dropped) {
 				client.MoveItem(result.payload.source, result.dropTarget);
@@ -891,22 +914,18 @@ namespace Trauma {
 		}
 
 		ImGui::SameLine(0.0f, HotbarGroupSpacing);
-		{
-			const SlotResult result = BuildSlot("back", inventory, BackAddress(),
-				inventory.back, "back", false);
-			if (result.dropped) {
-				client.MoveItem(result.payload.source, result.dropTarget);
-				dragDelivered = true;
-			}
+		const SlotResult backResult = BuildSlot("back", inventory, BackAddress(),
+			inventory.back, "back", false);
+		if (backResult.dropped) {
+			client.MoveItem(backResult.payload.source, backResult.dropTarget);
+			dragDelivered = true;
 		}
 		ImGui::SameLine();
-		{
-			const SlotResult result = BuildSlot("belt", inventory, BeltAddress(),
-				inventory.belt, "belt", false);
-			if (result.dropped) {
-				client.MoveItem(result.payload.source, result.dropTarget);
-				dragDelivered = true;
-			}
+		const SlotResult beltResult = BuildSlot("belt", inventory, BeltAddress(),
+			inventory.belt, "belt", false);
+		if (beltResult.dropped) {
+			client.MoveItem(beltResult.payload.source, beltResult.dropTarget);
+			dragDelivered = true;
 		}
 
 		ImGui::SameLine(0.0f, HotbarGroupSpacing);
@@ -915,45 +934,13 @@ namespace Trauma {
 
 		const ImVec2 hudCursor = ImGui::GetCursorScreenPos();
 		for (size_t index = 0; index < HotbarSlots; ++index) {
-			const ItemStack& item = inventory.hotbar[index];
-			if (ItemContainerCapacity(item.item) == 0)
-				continue;
-
-			const SlotAddress address = HotbarAddress(index);
-			const olc::vf2d slotMin = hotbarResults[index].screenMin;
-			const ImVec2 buttonMin(slotMin.x + (HotbarSlotSize - ContainerButtonWidth) * 0.5f,
-				slotMin.y - ContainerButtonHeight);
-			const ImVec2 buttonMax(buttonMin.x + ContainerButtonWidth, slotMin.y);
-			const olc::vf2d windowAnchor(slotMin.x + HotbarSlotSize * 0.5f,
-				buttonMin.y - 6.0f);
-
-			ImGui::PushID(static_cast<int>(index));
-			ImGui::SetCursorScreenPos(buttonMin);
-			ImGui::InvisibleButton("##containerToggle",
-				ImVec2(ContainerButtonWidth, ContainerButtonHeight));
-			const bool buttonHovered = ImGui::IsItemHovered();
-			const bool buttonClicked = ImGui::IsItemClicked()
-				|| ImGui::IsItemClicked(ImGuiMouseButton_Right);
-			if (buttonClicked)
-				ToggleContainer(address, windowAnchor);
-			ImGui::PopID();
-
-			const bool isOpen = IsContainerOpen(address);
-			ImDrawList* list = ImGui::GetWindowDrawList();
-			const ImU32 fill = isOpen ? IM_COL32(82, 125, 153, 245)
-				: buttonHovered ? IM_COL32(58, 78, 96, 245)
-				: IM_COL32(44, 57, 70, 235);
-			const ImU32 border = (isOpen || buttonHovered) ? SlotHoverBorder : SlotBorder;
-			list->AddRectFilled(buttonMin, buttonMax, fill);
-			list->AddRect(buttonMin, buttonMax, border);
-			const ImVec2 labelSize = ImGui::CalcTextSize("INV");
-			list->AddText(ImVec2(buttonMin.x + (ContainerButtonWidth - labelSize.x) * 0.5f,
-				buttonMin.y + (ContainerButtonHeight - labelSize.y) * 0.5f),
-				IM_COL32(235, 240, 245, 255), "INV");
-			if (buttonHovered)
-				ImGui::SetTooltip(isOpen ? "Close %s inventory" : "Open %s inventory",
-					ItemName(item.item));
+			char id[24] = {};
+			std::snprintf(id, sizeof(id), "hotbarContainer%zu", index);
+			BuildContainerButton(HotbarAddress(index), inventory.hotbar[index],
+				hotbarResults[index].screenMin, id);
 		}
+		BuildContainerButton(BackAddress(), inventory.back, backResult.screenMin, "backContainer");
+		BuildContainerButton(BeltAddress(), inventory.belt, beltResult.screenMin, "beltContainer");
 		ImGui::SetCursorScreenPos(hudCursor);
 
 		ImGui::End();
@@ -1106,6 +1093,44 @@ namespace Trauma {
 
 		ImGui::PopID();
 		return result;
+	}
+
+	void Game::BuildContainerButton(const SlotAddress& address, const ItemStack& stack,
+		const olc::vf2d& slotMin, const char* id) {
+		if (ItemContainerCapacity(stack.item) == 0)
+			return;
+
+		const ImVec2 buttonMin(slotMin.x + (HotbarSlotSize - ContainerButtonWidth) * 0.5f,
+			slotMin.y - ContainerButtonHeight);
+		const ImVec2 buttonMax(buttonMin.x + ContainerButtonWidth, slotMin.y);
+		const olc::vf2d windowAnchor(slotMin.x + HotbarSlotSize * 0.5f, buttonMin.y - 6.0f);
+
+		ImGui::PushID(id);
+		ImGui::SetCursorScreenPos(buttonMin);
+		ImGui::InvisibleButton("##containerToggle",
+			ImVec2(ContainerButtonWidth, ContainerButtonHeight));
+		const bool buttonHovered = ImGui::IsItemHovered();
+		const bool buttonClicked = ImGui::IsItemClicked()
+			|| ImGui::IsItemClicked(ImGuiMouseButton_Right);
+		if (buttonClicked)
+			ToggleContainer(address, windowAnchor);
+		ImGui::PopID();
+
+		const bool isOpen = IsContainerOpen(address);
+		ImDrawList* list = ImGui::GetWindowDrawList();
+		const ImU32 fill = isOpen ? IM_COL32(82, 125, 153, 245)
+			: buttonHovered ? IM_COL32(58, 78, 96, 245)
+			: IM_COL32(44, 57, 70, 235);
+		const ImU32 border = (isOpen || buttonHovered) ? SlotHoverBorder : SlotBorder;
+		list->AddRectFilled(buttonMin, buttonMax, fill);
+		list->AddRect(buttonMin, buttonMax, border);
+		const ImVec2 labelSize = ImGui::CalcTextSize("INV");
+		list->AddText(ImVec2(buttonMin.x + (ContainerButtonWidth - labelSize.x) * 0.5f,
+			buttonMin.y + (ContainerButtonHeight - labelSize.y) * 0.5f),
+			IM_COL32(235, 240, 245, 255), "INV");
+		if (buttonHovered)
+			ImGui::SetTooltip(isOpen ? "Close %s inventory" : "Open %s inventory",
+				ItemName(stack.item));
 	}
 
 	bool Game::IsContainerOpen(const SlotAddress& address) const {

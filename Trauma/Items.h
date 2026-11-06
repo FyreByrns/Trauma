@@ -16,6 +16,7 @@ namespace Trauma {
 	constexpr ItemId ItemNone = 0;
 
 	constexpr size_t HotbarSlots = 10;
+	constexpr uint8_t NoHotbarSlot = static_cast<uint8_t>(HotbarSlots);
 	constexpr size_t ClothingSlots = 3;
 	constexpr size_t MaxWorldItems = 16;
 	constexpr size_t MaxGunBarrels = 4;

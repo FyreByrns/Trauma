@@ -60,6 +60,7 @@ namespace Trauma {
 		void LeavePlay();
 		void UpdateClientInput(float deltaTime);
 		void UpdateInventoryInput();
+		void ToggleHotbarSlot(uint8_t slot);
 		void UpdateGrabMode();
 		void UpdateGunFire();
 		void ReloadGun();
@@ -94,6 +95,8 @@ namespace Trauma {
 		void BuildSettings();
 		SlotResult BuildSlot(const char* id, const Inventory& inventory,
 			const SlotAddress& address, const ItemStack& stack, const char* caption, bool selected);
+		void BuildContainerButton(const SlotAddress& address, const ItemStack& stack,
+			const olc::vf2d& slotMin, const char* id);
 		bool IsContainerOpen(const SlotAddress& address) const;
 		void ToggleContainer(const SlotAddress& address, const olc::vf2d& anchor);
 		void CloseContainer(const SlotAddress& address);

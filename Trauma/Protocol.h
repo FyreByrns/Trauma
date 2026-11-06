@@ -383,7 +383,7 @@ namespace Trauma::Net {
 		uint8_t reach = 0;
 		if (!reader.Read(input.moveX) || !reader.Read(jump) || !reader.Read(reach)
 			|| !reader.Read(input.aim.x) || !reader.Read(input.aim.y)
-			|| !reader.Read(input.hotbar) || input.hotbar >= HotbarSlots)
+			|| !reader.Read(input.hotbar) || input.hotbar > NoHotbarSlot)
 			return false;
 		input.jump = jump != 0;
 		input.reachLeft = (reach & 1) != 0;
@@ -661,7 +661,7 @@ namespace Trauma::Net {
 				&& !SlotAcceptsStack(ragdoll.inventory, BeltAddress(), belt)))
 			return false;
 		ragdoll.inventory.belt = std::move(belt);
-		if (!reader.Read(ragdoll.inventory.selected) || ragdoll.inventory.selected >= HotbarSlots)
+		if (!reader.Read(ragdoll.inventory.selected) || ragdoll.inventory.selected > NoHotbarSlot)
 			return false;
 		for (ObjectState& part : ragdoll.parts) {
 			uint8_t grounded = 0;

@@ -17,7 +17,7 @@ namespace Trauma {
 		ragdoll.input = input;
 		ragdoll.crouchTurn = std::max(0.0f, ragdoll.crouchTurn - FixedDeltaTime);
 		const int group = RagdollGroup(physics, &ragdoll);
-		if (input.hotbar < HotbarSlots)
+		if (input.hotbar <= NoHotbarSlot)
 			ragdoll.inventory.selected = input.hotbar;
 		ragdoll.ladderDetachTime = std::max(0.0f, ragdoll.ladderDetachTime - FixedDeltaTime);
 		const olc::vf2d position = ragdoll.parts[Torso].position;
